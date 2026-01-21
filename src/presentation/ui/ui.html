@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Rio</title>
+  <link rel="stylesheet" href="./ui.css">
+</head>
+
+<body>
+  <div class="container">
+    <div id="status" class="status"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="ai">🤖 AI Generate</button>
+      <button class="tab" data-tab="auto">🔗 Fetch API</button>
+      <button class="tab" data-tab="manual">📋 Paste JSON</button>
+      <button class="tab" data-tab="export">📤 Export</button>
+      <button class="tab" data-tab="versions">💾 Versions</button>
+    </div>
+
+    <!-- AI Chat Tab -->
+    <div id="ai-tab" class="tab-content active">
+      <!-- Mode Selection Screen -->
+      <div id="mode-selection-screen">
+        <div class="mode-selection-header">
+          <h2>Choose Your Action</h2>
+          <p class="mode-subtitle">Create a new design or edit an existing one</p>
+        </div>
+        <div class="mode-options">
+          <div class="mode-card" id="create-mode-btn">
+            <div class="mode-icon">✨</div>
+            <h3>Create New</h3>
+            <p>Start from scratch with AI assistance</p>
+          </div>
+          <div class="mode-card" id="edit-mode-btn">
+            <div class="mode-icon">✏️</div>
+            <h3>Edit Existing</h3>
+            <p>Modify a selected layer with AI</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat Container (hidden initially) -->
+      <div id="ai-chat-container" style="display: none;">
+        <!-- Back button for edit mode -->
+        <div id="edit-mode-header" style="display: none;">
+          <button id="back-to-mode-selection" class="back-btn">← Back to Mode Selection</button>
+          <div class="edit-mode-info">
+            <span class="edit-mode-label">✏️ Editing Mode</span>
+            <span id="selected-layer-name" class="selected-layer-name"></span>
+          </div>
+        </div>
+
+        <div id="chat-messages" style="display: flex;">
+          <div class="message assistant">
+            <div class="message-content">
+              <div>Hi! Describe your design and I'll create it for you. 🎨</div>
+            </div>
+          </div>
+        </div>
+        <div id="chat-input-container">
+  <textarea id="chat-input" 
+    placeholder="e.g. Create a login page with email and password fields..."></textarea>
+  <button id="chat-send-btn">Send</button>
+</div>
+        <div class="chat-hint">Press Enter to send • Shift + Enter for new line</div>
+      </div>
+    </div>
+
+    <!-- Auto Fetch Tab -->
+    <div id="auto-tab" class="tab-content">
+      <div class="input-group">
+        <label for="api-url">API Endpoint URL</label>
+        <input type="url" id="api-url" value="https://task-creator-api.onrender.com/api/tasks/latest-design"
+          placeholder="https://api.example.com/design" />
+        <p class="helper-text">Enter the URL that returns Figma-compatible JSON.</p>
+      </div>
+    </div>
+
+    <!-- Manual JSON Tab -->
+    <div id="manual-tab" class="tab-content">
+      <div class="input-group">
+        <label for="json-input">Design JSON</label>
+        <textarea id="json-input" placeholder='Paste your Figma design JSON here...
+
+Example format:
+{
+  "name": "My Frame",
+  "type": "FRAME",
+  "x": 0,
+  "y": 0,
+  "width": 400,
+  "height": 300,
+  "fills": [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}]
+}'></textarea>
+        <div id="json-stats" class="json-stats"></div>
+      </div>
+    </div>
+
+    <!-- Export Tab -->
+    <div id="export-tab" class="tab-content">
+      <div id="selection-info" class="selection-info">
+        <strong>No selection.</strong> Select layers to export specific elements, or export the entire page.
+      </div>
+      <div class="export-options">
+        <button id="export-selected-btn" class="btn-primary" disabled>📦 Export Selected</button>
+        <button id="export-all-btn" class="btn-success">📄 Export All (Page)</button>
+      </div>
+      <div class="export-output">
+        <label for="export-output">Exported JSON</label>
+        <textarea id="export-output" readonly placeholder="Click 'Export' to generate JSON..."></textarea>
+        <div id="export-stats" class="export-stats"></div>
+        <div class="copy-btn-wrapper">
+          <button id="copy-json-btn" class="btn-secondary" disabled>📋 Copy</button>
+          <button id="download-json-btn" class="btn-secondary" disabled>💾 Download</button>
+          <button id="save-to-db-btn" class="btn-primary" disabled>💾 Save to DB</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Versions Tab -->
+    <div id="versions-tab" class="tab-content">
+      <div class="versions-container">
+        <div class="versions-header">
+          <h3>📚 Saved Design Versions</h3>
+          <button id="refresh-versions-btn" class="btn-secondary refresh-btn">🔄 Refresh</button>
+        </div>
+        <div id="versions-list" class="versions-list">
+          <div class="empty-state">
+            <div class="empty-state-icon">📭</div>
+            <div class="empty-state-text">No versions saved yet.<br>Export a design and save it to the
+              database.</div>
+          </div>
+        </div>
+        <div id="selected-version-actions" class="version-actions" style="display: none;">
+          <button id="import-version-btn" class="btn-primary">📥 Import to Figma</button>
+          <button id="delete-version-btn" class="btn-danger">🗑️ Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main button group -->
+    <div class="button-group" id="main-button-group">
+      <button id="import-btn" class="btn-primary">🚀 Generate & Import</button>
+      <button id="cancel-btn" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Save to DB Modal -->
+  <div id="save-modal"
+    style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div
+      style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 24px; border-radius: 12px; width: 90%; max-width: 400px;">
+      <h3 style="margin-bottom: 16px; font-size: 18px; color: #374151;">💾 Save Design Version</h3>
+      <label for="save-description"
+        style="display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; color: #374151;">Description</label>
+      <textarea id="save-description"
+        style="width: 100%; height: 80px; padding: 12px; border: 2px solid #e5e7eb; border-radius: 8px; font-size: 14px; margin-bottom: 16px;"
+        placeholder="Enter a description for this version (e.g., 'Initial homepage design', 'Updated with new color scheme')"></textarea>
+      <div style="display: flex; gap: 12px;">
+        <button id="confirm-save-btn" class="btn-primary" style="flex: 1;">Save</button>
+        <button id="cancel-save-btn" class="btn-secondary" style="flex: 1;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Selection Floating Button -->
+  <div id="model-floating-btn" class="model-floating-btn">
+    <div class="model-btn-icon"></div>
+    <span class="model-btn-text">GPT-4.1</span>
+  </div>
+  <div id="design-system-floating-btn" class="model-floating-btn" style="bottom: 100px;">
+    <div class="model-btn-icon">🎨</div>
+    <span class="design-system-btn-text">Default design system</span>
+  </div>
+
+  <div id="design-system-panel" class="model-panel">
+    <div class="model-panel-header">
+      <h3>🎨 Select Design System</h3>
+      <button id="close-design-system-panel" class="close-model-panel">×</button>
+    </div>
+
+    <div id="design-system-list" class="model-list">
+      <div class="model-loading">
+        <div class="loading-spinner"></div>
+        <span>Loading design systems...</span>
+      </div>
+    </div>
+
+    <div class="model-panel-footer">
+      <span id="selected-design-system-info">Currently using: <span id="current-design-system-name">Default design system</span></span>
+      <div id="design-system-status" class="model-status"></div>
+    </div>
+  </div>
+
+  <!-- Model Selection Panel (hidden initially) -->
+  <div id="model-panel" class="model-panel">
+    <div class="model-panel-header">
+      <h3>Select AI Model</h3>
+      <button id="close-model-panel" class="close-model-panel">×</button>
+    </div>
+
+    <div id="model-list" class="model-list">
+      <div class="model-loading">
+        <div class="loading-spinner"></div>
+        <span>Loading AI models...</span>
+      </div>
+    </div>
+
+    <div class="model-panel-footer">
+      <span id="selected-model-info">Currently using: <span id="current-model-name">GPT-4.1</span></span>
+      <div id="model-status" class="model-status"></div>
+    </div>
+  </div>
+
+  <!-- Backdrop for model panel -->
+  <div id="model-panel-backdrop" class="model-panel-backdrop"></div>
+  <div id="design-system-panel-backdrop" class="model-panel-backdrop"></div>
+
+  <script src="./ui.js"></script>
+  <!-- Backdrop for design system panel -->
+</body>
+
+</html>

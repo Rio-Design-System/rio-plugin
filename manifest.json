@@ -1,0 +1,22 @@
+{
+  "name": "Rio",
+  "id": "1572976306714112720",
+  "documentAccess": "dynamic-page",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": [
+      "https://task-creator-api.onrender.com",
+      "http://localhost:5000",
+      "http://localhost:8080",
+      "https://api.anthropic.com",
+      "https://api.iconify.design",
+      "https://wsrv.nl",
+      "https://picsum.photos"
+    ],
+    "reasoning": "Allows the plugin to communicate with the backend API for task creation, design generation, and version management."
+  },
+  "permissions": ["currentuser", "activeusers"]
+}
