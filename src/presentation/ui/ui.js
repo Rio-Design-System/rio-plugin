@@ -10,7 +10,7 @@ let selectedVersionId = null;
 let versionsCache = [];
 
 // Model & Design System state
-let currentModel = 'gpt-4.1';
+let currentModel = 'mistralai/devstral-2512:free';
 let availableModels = [];
 let currentDesignSystem = 'Default design system';
 let availableDesignSystems = [];
@@ -19,6 +19,11 @@ let availableDesignSystems = [];
 let currentMode = null;
 let selectedLayerForEdit = null;
 let selectedLayerJson = null;
+
+let isBasedOnExistingMode = false;
+let referenceDesignJson = null;
+let referenceLayerName = '';
+
 
 // ==================== ELEMENTS ====================
 // These might be null if commented out in HTML
@@ -83,7 +88,27 @@ const saveModal = document.getElementById('save-modal');
 const saveDescription = document.getElementById('save-description');
 const confirmSaveBtn = document.getElementById('confirm-save-btn');
 const cancelSaveBtn = document.getElementById('cancel-save-btn');
+//genreate based on my project
+const basedOnExistingModeBtn = document.getElementById('based-on-existing-mode-btn');
+const backToModeFromBasedBtn = document.getElementById('back-to-mode-selection-from-based');
+const basedOnExistingModeHeader = document.getElementById('based-on-existing-mode-header');
+const referenceLayerNameEl = document.getElementById('reference-layer-name');
 
+
+basedOnExistingModeBtn.addEventListener('click', () => {
+    // showStatus('📍 Please select a reference layer...', 'info');
+    parent.postMessage({
+        pluginMessage: { type: 'request-layer-selection-for-reference' }
+    }, '*');
+});
+
+backToModeFromBasedBtn.addEventListener('click', () => {
+    resetToModeSelection();
+    // Reset based on existing specific state
+    isBasedOnExistingMode = false;
+    referenceDesignJson = null;
+    referenceLayerName = '';
+});
 
 const getHeaders = async () => {
     return new Promise((resolve, reject) => {
@@ -457,7 +482,7 @@ function showChatInterface() {
     // Welcome message
     const model = availableModels.find(m => m.id === currentModel);
     const system = availableDesignSystems.find(s => s.id === currentDesignSystem);
-    const modelName = model?.name || 'GPT-4.1';
+    const modelName = model?.name || 'Devstral-2512';
     const systemName = system?.name || 'Default design system';
 
     let welcomeMessage;
@@ -520,24 +545,22 @@ function resetToModeSelection() {
     currentMode = null;
     selectedLayerForEdit = null;
     selectedLayerJson = null;
+    isBasedOnExistingMode = false;
+    referenceDesignJson = null;
+    referenceLayerName = '';
 
-    if (modeSelectionScreen) modeSelectionScreen.style.display = 'flex';
+    modeSelectionScreen.style.display = 'flex';
+    aiChatContainer.style.display = 'none';
+    aiChatContainer.classList.remove('show-chat');
+    editModeHeader.style.display = 'none';
+    editModeHeader.classList.remove('show-header');
+    basedOnExistingModeHeader.style.display = 'none';
 
-    if (aiChatContainer) {
-        aiChatContainer.style.display = 'none';
-        aiChatContainer.classList.remove('show-chat');
-    }
+    chatInput.value = '';
 
-    if (editModeHeader) {
-        editModeHeader.style.display = 'none';
-        editModeHeader.classList.remove('show-header');
-    }
-
-    if (chatInput) chatInput.value = '';
     conversationHistory = [];
     chatMessages = [];
 }
-
 // ==================== TAB SWITCHING ====================
 tabs.forEach(tab => {
     tab.addEventListener('click', () => {
@@ -568,9 +591,9 @@ tabs.forEach(tab => {
                     loadVersions();
                 }
             } else if (tabName === 'ai') {
-                mainButtonGroup.style.display = 'none';
+                mainButtonGroup.style.display = 'none';  // ✅ Already hides on AI tab
             } else {
-                mainButtonGroup.style.display = 'flex';
+                mainButtonGroup.style.display = 'flex';  // ✅ Shows on 'auto' and 'manual' tabs
                 if (importBtn) importBtn.textContent = buttonTexts[tabName] || 'Import';
             }
         } else {
@@ -627,36 +650,51 @@ function sendChatMessage() {
     conversationHistory.push({ role: 'user', content: message });
 
     const model = availableModels.find(m => m.id === currentModel);
-    const system = availableDesignSystems.find(s => s.id === currentDesignSystem);
+    const modelName = model?.name || 'Devstral-2512';
 
-    // Check if parent exists before postMessage
-    if (typeof parent !== 'undefined') {
-        addMessage('assistant', currentMode === 'edit'
-            ? `Editing in progress, please wait`
-            : `Creating in progress, please wait for me`, true);
+    if (isBasedOnExistingMode) {
+        // ✨ BASED ON EXISTING MODE
+        addMessage('assistant', `Creating new design based on "${referenceLayerName}" style...`, true);
 
-        if (currentMode === 'edit') {
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'ai-edit-design',
-                    message: message,
-                    history: conversationHistory,
-                    layerJson: selectedLayerJson,
-                    model: currentModel,
-                    designSystemId: currentDesignSystem
-                }
-            }, '*');
-        } else {
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'ai-chat-message',
-                    message: message,
-                    history: conversationHistory,
-                    model: currentModel,
-                    designSystemId: currentDesignSystem
-                }
-            }, '*');
-        }
+        parent.postMessage({
+            pluginMessage: {
+                type: 'ai-generate-based-on-existing',
+                message: message,
+                history: conversationHistory,
+                referenceJson: referenceDesignJson,
+                model: currentModel
+            }
+        }, '*');
+
+    } else if (currentMode === 'edit') {
+        // EDIT MODE
+        addMessage('assistant', `Editing in progress, please wait`, true);
+
+        parent.postMessage({
+            pluginMessage: {
+                type: 'ai-edit-design',
+                message: message,
+                history: conversationHistory,
+                layerJson: selectedLayerJson,
+                model: currentModel,
+                designSystemId: currentDesignSystem
+            }
+        }, '*');
+
+    } else {
+        // CREATE MODE
+        addMessage('assistant', `Creating in progress, please wait for me`, true);
+
+        parent.postMessage({
+            pluginMessage: {
+                type: 'ai-chat-message',
+                message: message,
+                history: conversationHistory,
+                model: currentModel,
+                designSystemId: currentDesignSystem
+            }
+        }, '*');
+
     }
 }
 
@@ -697,6 +735,7 @@ function removeLoadingMessages() {
 }
 
 // ==================== DESIGN PREVIEW FUNCTIONS ====================
+
 function addDesignPreview(designData, previewHtml = null, isEditMode = false, layerInfo = null) {
     if (!chatMessagesEl) return;
     const lastMessage = chatMessagesEl.lastElementChild;
@@ -709,8 +748,22 @@ function addDesignPreview(designData, previewHtml = null, isEditMode = false, la
     previewEl.className = 'design-preview';
     const uniqueId = 'import-btn-' + Date.now();
 
-    const modeText = isEditMode ? '✏️ Edited Design Preview' : '✨ New Design Preview';
-    const buttonText = isEditMode ? 'Update in Figma' : 'Import to Figma';
+    // 🔥 تحديد النص بناءً على الـ mode الحقيقي
+    let modeText, buttonText, modeBadge;
+
+    if (isBasedOnExistingMode) {
+        modeText = '🎨 Generated Design (Based on Existing)';
+        buttonText = 'Import to Figma';
+        modeBadge = '<span class="create-badge">NEW</span>';
+    } else if (isEditMode) {
+        modeText = '✏️ Edited Design Preview';
+        buttonText = 'Update in Figma';
+        modeBadge = '<span class="edit-badge">EDIT</span>';
+    } else {
+        modeText = '✨ New Design Preview';
+        buttonText = 'Import to Figma';
+        modeBadge = '<span class="create-badge">NEW</span>';
+    }
 
     const layerInfoHtml = isEditMode && layerInfo ?
         `<div class="edit-layer-info">
@@ -725,7 +778,7 @@ function addDesignPreview(designData, previewHtml = null, isEditMode = false, la
     <div class="design-preview-header">
       <span class="design-preview-title">
         ${modeText}
-        ${isEditMode ? '<span class="edit-badge">EDIT</span>' : '<span class="create-badge">NEW</span>'}
+        ${modeBadge}
       </span>
       <div class="preview-actions">
         <div class="zoom-controls">
@@ -774,7 +827,16 @@ function addDesignPreview(designData, previewHtml = null, isEditMode = false, la
             importButton.disabled = true;
             importButton.textContent = isEditMode ? 'Updating...' : 'Importing...';
 
-            const messageType = isEditMode ? 'import-edited-design' : 'import-design-from-chat';
+
+            let messageType;
+            if (isBasedOnExistingMode) {
+                messageType = 'import-based-on-existing-design';
+            } else if (isEditMode) {
+                messageType = 'import-edited-design';
+            } else {
+                messageType = 'import-design-from-chat';
+            }
+
             parent.postMessage({
                 pluginMessage: {
                     type: messageType,
@@ -1301,7 +1363,7 @@ if (copyJsonBtn) {
 if (downloadJsonBtn) {
     downloadJsonBtn.addEventListener('click', () => {
         if (!currentExportData) return;
-        const jsonString = JSON.stringify(currentExportData, null, 2);
+        const jsonString = JSON.stringify(currentExportData);
         const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1655,71 +1717,137 @@ window.onmessage = async (event) => {
             resetExportButtons();
             setTimeout(hideStatus, 3000);
             break;
+
+        case 'layer-selected-for-reference':
+            // User selected a reference layer for "based on existing" mode
+            referenceDesignJson = msg.layerJson;
+            referenceLayerName = msg.layerName;
+            isBasedOnExistingMode = true;
+            currentMode = 'based-on-existing';
+
+            // Show chat interface
+            modeSelectionScreen.style.display = 'none';
+            aiChatContainer.style.display = 'flex';
+            aiChatContainer.classList.add('show-chat');
+            basedOnExistingModeHeader.style.display = 'block';
+            editModeHeader.style.display = 'none';
+            referenceLayerNameEl.textContent = `"${referenceLayerName}"`;
+
+            // Update welcome message
+            const model = availableModels.find(m => m.id === currentModel);
+            const modelName = model?.name || 'Devstral-2512';
+
+            chatMessagesEl.innerHTML = `
+        <div class="message assistant">
+            <div class="message-content">
+                <div>I'll create a new design based on <strong>"${referenceLayerName}"</strong> style using ${modelName}. What would you like to create? 🎨</div>
+            </div>
+        </div>
+    `;
+
+            // Update input placeholder
+            chatInput.placeholder = `e.g., Create a login page based on "${referenceLayerName}" style...`;
+            chatInput.focus();
+
+            // showStatus(`✅ Reference design "${referenceLayerName}" loaded`, 'success');
+            setTimeout(hideStatus, 2000);
+            break;
+
+
+
+        case 'ai-based-on-existing-response':
+            isGenerating = false;
+            chatSendBtn.disabled = false;
+            removeLoadingMessages();
+
+            addMessage('assistant', msg.message);
+            conversationHistory.push({ role: 'assistant', content: msg.message });
+
+            if (msg.cost) {
+                displayCostInfo(msg.cost);
+            }
+
+            if (msg.designData || msg.previewHtml) {
+                currentDesignData = msg.designData;
+                const referenceInfo = {
+                    name: referenceLayerName,
+                    type: 'REFERENCE'
+                };
+                addDesignPreview(msg.designData, msg.previewHtml, false, referenceInfo);
+            }
+            break;
+
+        case 'ai-based-on-existing-error':
+            isGenerating = false;
+            chatSendBtn.disabled = false;
+            removeLoadingMessages();
+            addMessage('assistant', `Error: ${msg.error}`);
+            break;
     }
 };
 // ==================== RESIZE TEXTAREA FROM TOP ====================
-function setupTextareaResize() {
-    const textarea = document.getElementById('chat-input');
-    if (!textarea) {
-        console.warn('⚠️ chatInput not found');
-        return;
-    }
+// function setupTextareaResize() {
+//     const textarea = document.getElementById('chat-input');
+//     if (!textarea) {
+//         console.warn('⚠️ chatInput not found');
+//         return;
+//     }
 
-    console.log('✅ Resize initialized');
+//     console.log('✅ Resize initialized');
 
-    let isResizing = false;
-    let startY = 0;
-    let startHeight = 0;
+//     let isResizing = false;
+//     let startY = 0;
+//     let startHeight = 0;
 
-    textarea.addEventListener('mousedown', function (e) {
-        const rect = textarea.getBoundingClientRect();
-        const isTopEdge = e.clientY - rect.top < 10;
+//     textarea.addEventListener('mousedown', function (e) {
+//         const rect = textarea.getBoundingClientRect();
+//         const isTopEdge = e.clientY - rect.top < 10;
 
-        if (isTopEdge) {
-            isResizing = true;
-            startY = e.clientY;
-            startHeight = parseInt(getComputedStyle(textarea).height);
-            e.preventDefault();
+//         if (isTopEdge) {
+//             isResizing = true;
+//             startY = e.clientY;
+//             startHeight = parseInt(getComputedStyle(textarea).height);
+//             e.preventDefault();
 
-            document.body.style.cursor = 'ns-resize';
-            document.body.style.userSelect = 'none';
+//             document.body.style.cursor = 'ns-resize';
+//             document.body.style.userSelect = 'none';
 
-            console.log('🎯 Started resize from:', startHeight);
-        }
-    });
+//             console.log('🎯 Started resize from:', startHeight);
+//         }
+//     });
 
-    document.addEventListener('mousemove', function (e) {
-        // Change cursor on hover
-        if (!isResizing) {
-            const rect = textarea.getBoundingClientRect();
-            const isTopEdge = e.clientY - rect.top < 10 &&
-                e.clientX >= rect.left &&
-                e.clientX <= rect.right &&
-                e.clientY >= rect.top;
+//     document.addEventListener('mousemove', function (e) {
+//         // Change cursor on hover
+//         if (!isResizing) {
+//             const rect = textarea.getBoundingClientRect();
+//             const isTopEdge = e.clientY - rect.top < 10 &&
+//                 e.clientX >= rect.left &&
+//                 e.clientX <= rect.right &&
+//                 e.clientY >= rect.top;
 
-            textarea.style.cursor = isTopEdge ? 'ns-resize' : 'text';
-            return;
-        }
+//             textarea.style.cursor = isTopEdge ? 'ns-resize' : 'text';
+//             return;
+//         }
 
-        // Resize
-        const deltaY = startY - e.clientY;
-        const newHeight = Math.max(44, Math.min(140, startHeight + deltaY));
+//         // Resize
+//         const deltaY = startY - e.clientY;
+//         const newHeight = Math.max(44, Math.min(140, startHeight + deltaY));
 
-        textarea.style.setProperty('height', newHeight + 'px', 'important');
+//         textarea.style.setProperty('height', newHeight + 'px', 'important');
 
-        console.log('📏 Resizing to:', newHeight);
-    });
+//         console.log('📏 Resizing to:', newHeight);
+//     });
 
-    document.addEventListener('mouseup', function () {
-        if (isResizing) {
-            isResizing = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
+//     document.addEventListener('mouseup', function () {
+//         if (isResizing) {
+//             isResizing = false;
+//             document.body.style.cursor = '';
+//             document.body.style.userSelect = '';
 
-            console.log('✋ Resize stopped at:', textarea.style.height);
-        }
-    });
-}
+//             console.log('✋ Resize stopped at:', textarea.style.height);
+//         }
+//     });
+// }
 
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', function () {
@@ -1728,7 +1856,7 @@ document.addEventListener('DOMContentLoaded', function () {
     resetToModeSelection();
     fetchDesignSystems();
     fetchAIModels();
-    setupTextareaResize();
+    // setupTextareaResize();
 
 
     setTimeout(() => {
