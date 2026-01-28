@@ -35,6 +35,13 @@ export class PluginMessageHandler {
     console.log("Plugin Message with Data", message);
 
     switch (message.type) {
+      case 'resize-window':
+        if ('size' in message) {
+          figma.ui.resize(message.size.w, message.size.h);
+          // Save size for persistence
+          figma.clientStorage.setAsync('pluginSize', message.size).catch(() => {});
+        }
+        break;
       case 'ai-chat-message':
         if (message.message !== undefined) {
           await this.handleAIChatMessage(message.message, message.history, message.model, message.designSystemId);
@@ -418,17 +425,8 @@ export class PluginMessageHandler {
     const result = await this.importAIDesignUseCase.execute(designData);
 
     if (result.success) {
-      if (oldNode) {
-        try {
-          oldNode.remove();
-          this.notificationPort.notify('✅ Design updated successfully!');
-        } catch (error) {
-          this.notificationPort.notify('✅ New design imported! (Could not remove old layer)');
-        }
-      } else {
-        this.notificationPort.notify('✅ Edited design imported successfully!');
-      }
-
+      this.notificationPort.notify('✅ Edited design imported successfully!');
+      
       this.uiPort.postMessage({ type: 'import-success', buttonId: buttonId });
 
       try {
@@ -451,7 +449,7 @@ export class PluginMessageHandler {
         buttonId: buttonId
       });
     }
-  }
+}
 
   private async handleImportBasedOnExistingDesign(designData: unknown, buttonId: any): Promise<void> {
     const result = await this.importAIDesignUseCase.execute(designData);
