@@ -7,7 +7,7 @@ import {
   ExportSelectedUseCase,
   ExportAllUseCase,
 } from '../../application/use-cases';
-import { ApiConfig } from '../../shared/constants';
+import { ApiConfig, defaultModel } from '../../shared/constants/plugin-config.js';
 import { GetUserInfoUseCase } from '@application/use-cases/getUserInfoUseCase';
 import { errorReporter } from '../../infrastructure/services/error-reporter.service';
 import { ImageOptimizerService, ImageReference } from '../../infrastructure/services/plugin-image-optimizer.service'; // ← NEW
@@ -115,8 +115,8 @@ export class PluginMessageHandler {
         case 'cancel':
           this.uiPort.close();
           break;
-        case 'import-version':
-          await this.handleImportVersion(message.designJson);
+        case 'import-ui-library-component':
+          await this.handleImportUILibraryComponent(message.designJson);
           break;
         case 'GET_HEADERS':
           const headers = await this.getUserInfoUseCase.execute();
@@ -124,6 +124,36 @@ export class PluginMessageHandler {
             type: 'HEADERS_RESPONSE',
             headers: headers
           });
+          break;
+
+        case 'SAVE_AUTH_TOKEN':
+          if (message.token) {
+            await figma.clientStorage.setAsync('rio_auth_token', message.token);
+          }
+          break;
+
+        case 'GET_AUTH_TOKEN':
+          try {
+            const token = await figma.clientStorage.getAsync('rio_auth_token');
+            figma.ui.postMessage({
+              type: 'AUTH_TOKEN_RESPONSE',
+              token: token
+            });
+          } catch (e) {
+            console.warn('Failed to retrieve auth token:', e);
+            figma.ui.postMessage({
+              type: 'AUTH_TOKEN_RESPONSE',
+              token: null
+            });
+          }
+          break;
+
+        case 'CLEAR_AUTH_TOKEN':
+          await figma.clientStorage.deleteAsync('rio_auth_token');
+          break;
+
+        case 'OPEN_EXTERNAL_URL':
+          // Handled by UI window.open
           break;
         case 'REPORT_ERROR':
           await this.handleReportError((message as any).errorData);
@@ -141,6 +171,9 @@ export class PluginMessageHandler {
           if (message.connections) {
             await this.handleApplyPrototypeConnections(message.connections);
           }
+          break;
+        case 'generate-preview-image':
+          await this.handleGeneratePreviewImage(message.requestId, message.maxWidth);
           break;
         default:
           console.warn('Unknown message type:', message.type);
@@ -190,7 +223,7 @@ export class PluginMessageHandler {
         headers: await this.getUserInfoUseCase.execute(),
         body: JSON.stringify({
           frames,
-          modelId: modelId || 'mistralai/devstral-2512:free'
+          modelId: modelId || defaultModel.id
         })
       });
 
@@ -377,7 +410,7 @@ export class PluginMessageHandler {
         this.conversationHistory = history;
       }
 
-      const selectedModel = model || 'mistralai/devstral-2512:free';
+      const selectedModel = model || defaultModel.id;
 
       // Strip images before sending to backend
       console.log('🔧 Plugin: Stripping images before sending to backend...');
@@ -469,7 +502,7 @@ export class PluginMessageHandler {
         conversationHistory = history;
       }
 
-      const selectedModel = model || 'mistralai/devstral-2512:free';
+      const selectedModel = model || defaultModel.id;
 
       // Strip images from reference
       console.log('🔧 Plugin: Stripping images from reference design...');
@@ -545,7 +578,7 @@ export class PluginMessageHandler {
         this.conversationHistory = history;
       }
 
-      const selectedModel = model || 'mistralai/devstral-2512:free';
+      const selectedModel = model || defaultModel.id;
 
       const response = await fetch(`${ApiConfig.BASE_URL}/api/designs/generate-from-conversation`, {
         method: 'POST',
@@ -787,12 +820,12 @@ export class PluginMessageHandler {
     }
   }
 
-  private async handleImportVersion(designJson: unknown): Promise<void> {
+  private async handleImportUILibraryComponent(designJson: unknown): Promise<void> {
     try {
       const result = await this.importDesignUseCase.execute(designJson);
 
       if (result.success) {
-        this.notificationPort.notify('✅ Version imported successfully!');
+        this.notificationPort.notify('✅ Component imported successfully!');
         this.uiPort.postMessage({ type: 'import-success' });
       } else {
         this.notificationPort.notifyError(result.error || 'Import failed');
@@ -804,9 +837,53 @@ export class PluginMessageHandler {
     } catch (error) {
       errorReporter.reportErrorAsync(error as Error, {
         componentName: 'PluginMessageHandler',
-        actionType: 'handleImportVersion',
+        actionType: 'handleImportUILibraryComponent',
       });
       throw error;
+    }
+  }
+
+  private async handleGeneratePreviewImage(requestId?: string, maxWidth?: number): Promise<void> {
+    try {
+      const selection = figma.currentPage.selection;
+
+      if (selection.length === 0) {
+        throw new Error('Please select a layer to generate a preview image');
+      }
+
+      if (selection.length > 1) {
+        throw new Error('Please select only one layer to generate a preview image');
+      }
+
+      const selectedNode = selection[0] as SceneNode;
+      if (!('exportAsync' in selectedNode)) {
+        throw new Error('Selected layer cannot be exported as an image');
+      }
+
+      const width = Math.max(64, Math.min(maxWidth ?? 320, 2000));
+      const bytes = await (selectedNode as ExportMixin).exportAsync({
+        format: 'PNG',
+        constraint: { type: 'WIDTH', value: width },
+      });
+
+      const base64 = figma.base64Encode(bytes);
+      this.uiPort.postMessage({
+        type: 'preview-image-generated',
+        requestId,
+        previewImage: `data:image/png;base64,${base64}`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to generate preview image';
+      this.uiPort.postMessage({
+        type: 'preview-image-error',
+        requestId,
+        error: errorMessage,
+      });
+
+      errorReporter.reportErrorAsync(error as Error, {
+        componentName: 'PluginMessageHandler',
+        actionType: 'handleGeneratePreviewImage',
+      });
     }
   }
 }
