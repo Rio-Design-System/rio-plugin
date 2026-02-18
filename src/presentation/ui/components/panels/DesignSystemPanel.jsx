@@ -15,13 +15,7 @@ export default function DesignSystemPanel() {
     const [statusType, setStatusType] = useState('');
     const [systemsLoaded, setSystemsLoaded] = useState(false);
 
-    useEffect(() => {
-        if (designSystemPanelOpen && !systemsLoaded) {
-            fetchSystems();
-        }
-    }, [designSystemPanelOpen]);
-
-    const fetchSystems = async () => {
+    async function fetchSystems() {
         try {
             setStatusMsg('🔄 Loading design systems...');
             setStatusType('info');
@@ -46,16 +40,17 @@ export default function DesignSystemPanel() {
                 actionType: 'fetchDesignSystems'
             });
         }
-    };
+    }
+
+    useEffect(() => {
+        if (designSystemPanelOpen && !systemsLoaded) {
+            fetchSystems();
+        }
+    }, [designSystemPanelOpen]);
 
     const handleSelect = (systemId) => {
         dispatch({ type: 'SET_DESIGN_SYSTEM', systemId });
         dispatch({ type: 'CLOSE_DESIGN_SYSTEM_PANEL' });
-        try {
-            localStorage.setItem('figma-design-system', systemId);
-        } catch (e) {
-            console.log('LocalStorage save error:', e);
-        }
     };
 
     const handleClose = () => {

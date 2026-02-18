@@ -10,6 +10,18 @@ export interface CostInfo {
   outputTokens: number;
 }
 
+export interface PointsInfo {
+  deducted: number;
+  remaining: number;
+  wasFree: boolean;
+  hasPurchased?: boolean;
+  subscription?: {
+    dailyPointsUsed: number;
+    dailyPointsLimit: number;
+    planId?: string;
+  };
+}
+
 /**
  * Messages that can be sent to the UI (UIMessage)
  */
@@ -20,23 +32,24 @@ export type UIMessage =
   | { type: 'export-success'; data: DesignNode[]; nodeCount: number }
   | { type: 'export-error'; error: string }
   | { type: 'call-backend-for-claude'; prompt: string }
-  | { type: 'ai-chat-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo }
-  | { type: 'ai-chat-error'; error: string }
+  | { type: 'ai-chat-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo; points?: PointsInfo }
+  | { type: 'ai-chat-error'; error: string; statusCode?: number }
   | { type: 'layer-selected-for-edit'; layerName: string; layerJson: any; _imageReferenceKey?: string }
   | { type: 'layer-selected-for-reference'; layerName: string; layerJson: any; _imageReferenceKey?: string }
   | { type: 'no-layer-selected' }
-  | { type: 'ai-edit-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo }
-  | { type: 'ai-edit-error'; error: string }
-  | { type: 'ai-based-on-existing-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo } // ✨ NEW
-  | { type: 'ai-based-on-existing-error'; error: string } // ✨ NEW
+  | { type: 'ai-edit-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo; points?: PointsInfo }
+  | { type: 'ai-edit-error'; error: string; statusCode?: number }
+  | { type: 'ai-based-on-existing-response'; message: string; designData: any; previewHtml?: string | null; cost?: CostInfo; points?: PointsInfo } // ✨ NEW
+  | { type: 'ai-based-on-existing-error'; error: string; statusCode?: number } // ✨ NEW
   | { type: 'design-updated'; layerJson: any; buttonId?: string }
   | { type: 'HEADERS_RESPONSE'; headers: any }
   | { type: 'AUTH_TOKEN_RESPONSE'; token: string | null }
+  | { type: 'points-updated'; balance: number; hasPurchased: boolean }
   // Add to UIMessage type union (after existing types):
   | { type: 'frames-loaded'; frames: FrameInfo[] }
   | { type: 'frames-load-error'; error: string }
-  | { type: 'prototype-connections-generated'; connections: PrototypeConnection[]; reasoning?: string; cost?: CostInfo }
-  | { type: 'prototype-connections-error'; error: string }
+  | { type: 'prototype-connections-generated'; connections: PrototypeConnection[]; reasoning?: string; cost?: CostInfo; points?: PointsInfo }
+  | { type: 'prototype-connections-error'; error: string; statusCode?: number }
   | { type: 'prototype-applied'; appliedCount: number }
   | { type: 'prototype-apply-error'; error: string }
   | { type: 'preview-image-generated'; requestId?: string; previewImage: string | null }
@@ -73,7 +86,8 @@ export type PluginMessage =
     type: 'ai-edit-design';
     message: string;
     history?: Array<{ role: string; content: string }>;
-    layerJson: any;
+    layerJson?: any;
+    layerId?: string;
     model?: string;
     designSystemId?: string;
   }
@@ -81,7 +95,8 @@ export type PluginMessage =
     type: 'ai-generate-based-on-existing';
     message: string;
     history?: Array<{ role: string; content: string }>;
-    referenceJson: any;
+    referenceJson?: any;
+    referenceId?: string;
     model?: string;
     designSystemId?: string;
   }
@@ -109,7 +124,12 @@ export type PluginMessage =
   | { type: 'OPEN_EXTERNAL_URL'; url: string }
   // Add to PluginMessage type union (after existing types):
   | { type: 'get-frames-for-prototype' }
-  | { type: 'generate-prototype-connections'; frames: FrameInfo[]; modelId?: string }
+  | {
+    type: 'generate-prototype-connections';
+    frames?: any[]; // Keep for backward compatibility if needed, or remove if fully deprecated
+    frameIds?: string[];
+    modelId?: string;
+  }
   | { type: 'apply-prototype-connections'; connections: PrototypeConnection[] }
   | { type: 'generate-preview-image'; requestId?: string; maxWidth?: number }
 
