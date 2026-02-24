@@ -74,19 +74,33 @@ export class PluginMessageHandler {
           await this.handleRequestLayerSelectionForReference();
           break;
         case 'ai-edit-design':
-          if (message.message !== undefined && message.layerJson !== undefined) {
-            await this.handleAIEditDesign(message.message, message.history, message.layerJson, message.model, message.designSystemId);
+          if (message.message !== undefined) {
+            let editLayerJson = message.layerJson;
+            // If only layerId is provided, fetch and export the node
+            if (!editLayerJson && message.layerId) {
+              editLayerJson = await this.exportNodeById(message.layerId);
+            }
+            if (editLayerJson) {
+              await this.handleAIEditDesign(message.message, message.history, editLayerJson, message.model, message.designSystemId);
+            }
           }
           break;
         case 'ai-generate-based-on-existing':
-          if (message.message !== undefined && message.referenceJson !== undefined) {
-            console.log('🎨 Handling generate-based-on-existing request');
-            await this.handleGenerateBasedOnExisting(
-              message.message,
-              message.history,
-              message.referenceJson,
-              message.model
-            );
+          if (message.message !== undefined) {
+            let refJson = message.referenceJson;
+            // If only referenceId is provided, fetch and export the node
+            if (!refJson && message.referenceId) {
+              refJson = await this.exportNodeById(message.referenceId);
+            }
+            if (refJson) {
+              console.log('🎨 Handling generate-based-on-existing request');
+              await this.handleGenerateBasedOnExisting(
+                message.message,
+                message.history,
+                refJson,
+                message.model
+              );
+            }
           }
           break;
         case 'import-design-from-chat':
@@ -163,8 +177,15 @@ export class PluginMessageHandler {
           await this.handleGetFramesForPrototype();
           break;
         case 'generate-prototype-connections':
-          if (message.frames) {
-            await this.handleGeneratePrototypeConnections(message.frames, message.modelId);
+          {
+            let protoFrames = message.frames;
+            // If only frameIds provided, fetch the frame info
+            if (!protoFrames && message.frameIds) {
+              protoFrames = await this.getFrameInfoByIds(message.frameIds);
+            }
+            if (protoFrames && protoFrames.length > 0) {
+              await this.handleGeneratePrototypeConnections(protoFrames, message.modelId);
+            }
           }
           break;
         case 'apply-prototype-connections':
@@ -174,6 +195,9 @@ export class PluginMessageHandler {
           break;
         case 'generate-preview-image':
           await this.handleGeneratePreviewImage(message.requestId, message.maxWidth);
+          break;
+        case 'generate-preview-from-design-data':
+          await this.handleGeneratePreviewFromDesignData(message.requestId, message.designData, message.maxWidth);
           break;
         default:
           console.warn('Unknown message type:', message.type);
@@ -312,6 +336,53 @@ export class PluginMessageHandler {
         componentName: 'PluginMessageHandler',
         actionType: 'handleApplyPrototypeConnections'
       });
+    }
+  }
+
+  // ==================== NODE FETCH HELPERS ====================
+
+  /**
+   * Fetch a node by ID, select it, and export its JSON representation
+   */
+  private async exportNodeById(nodeId: string): Promise<any | null> {
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) {
+        console.warn(`Node not found: ${nodeId}`);
+        return null;
+      }
+
+      // Temporarily select the node so exportSelected works
+      const previousSelection = [...figma.currentPage.selection];
+      figma.currentPage.selection = [node as SceneNode];
+
+      const exportResult = await this.exportSelectedUseCase.execute();
+
+      // Restore previous selection
+      figma.currentPage.selection = previousSelection;
+
+      if (exportResult.success && exportResult.nodes.length > 0) {
+        return exportResult.nodes[0];
+      }
+      return null;
+    } catch (error) {
+      console.error(`Failed to export node ${nodeId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Get FrameInfo objects for an array of node IDs
+   */
+  private async getFrameInfoByIds(frameIds: string[]): Promise<FrameInfo[]> {
+    try {
+      const nodeRepository = new (await import('../../infrastructure/figma/figma-node.repository')).FigmaNodeRepository();
+      const allFrames = await nodeRepository.getFramesWithInteractiveElements();
+      const idSet = new Set(frameIds);
+      return allFrames.filter(f => idSet.has(f.id));
+    } catch (error) {
+      console.error('Failed to get frame info by IDs:', error);
+      return [];
     }
   }
 
@@ -967,6 +1038,64 @@ export class PluginMessageHandler {
       errorReporter.reportErrorAsync(error as Error, {
         componentName: 'PluginMessageHandler',
         actionType: 'handleGeneratePreviewImage',
+      });
+    }
+  }
+
+  private async handleGeneratePreviewFromDesignData(requestId?: string, designData?: unknown, maxWidth?: number): Promise<void> {
+    const previousSelection = [...figma.currentPage.selection];
+    const createdNodes: SceneNode[] = [];
+
+    try {
+      const result = await this.importAIDesignUseCase.execute(designData);
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create nodes for preview');
+      }
+
+      // The use case sets selection to the created nodes
+      createdNodes.push(...(figma.currentPage.selection as SceneNode[]));
+
+      if (createdNodes.length === 0) {
+        throw new Error('No nodes were created for preview');
+      }
+
+      const nodeToExport = createdNodes[0];
+      if (!('exportAsync' in nodeToExport)) {
+        throw new Error('Created node cannot be exported as an image');
+      }
+
+      const width = Math.max(64, Math.min(maxWidth ?? 320, 2000));
+      const bytes = await (nodeToExport as ExportMixin).exportAsync({
+        format: 'PNG',
+        constraint: { type: 'WIDTH', value: width },
+      });
+
+      const base64 = figma.base64Encode(bytes);
+
+      // Delete temp nodes and restore selection
+      for (const node of createdNodes) {
+        node.remove();
+      }
+      figma.currentPage.selection = previousSelection.filter(n => !n.removed);
+
+      this.uiPort.postMessage({
+        type: 'preview-image-generated',
+        requestId,
+        previewImage: `data:image/png;base64,${base64}`,
+      });
+    } catch (error) {
+      // Clean up any created nodes on error
+      for (const node of createdNodes) {
+        try { node.remove(); } catch (_) { /* already removed */ }
+      }
+      figma.currentPage.selection = previousSelection.filter(n => !n.removed);
+
+      const errorMessage = error instanceof Error ? error.message : 'Failed to generate preview from design data';
+      this.uiPort.postMessage({
+        type: 'preview-image-error',
+        requestId,
+        error: errorMessage,
       });
     }
   }

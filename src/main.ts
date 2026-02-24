@@ -138,11 +138,11 @@ class PluginApplication {
     })));
     console.log("editorType", figma.editorType);
 
-    if (!AccessControlService.checkAccess()) {
-      console.log('❌ Access Denied - Plugin closing');
-      figma.closePlugin();
-      return;
-    }
+    // if (!AccessControlService.checkAccess()) {
+    //   console.log('❌ Access Denied - Plugin closing');
+    //   figma.closePlugin();
+    //   return;
+    // }
 
     this.uiPort.show({
       width: PluginConfig.UI_WIDTH,
