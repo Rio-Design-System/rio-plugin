@@ -132,7 +132,7 @@ function ChatInterface({
         } else if (currentMode === 'prototype') {
             welcomeMessage = `Prototype Mode: Attach 2 or more frames with 📎 to generate connections between them. Then click Send. 🔗`;
         } else {
-            welcomeMessage = `Describe what you'd like to create using <strong>${modelName}</strong> + <strong>${systemName}</strong>. Attach a frame with 📎 to use it as a style reference.`;
+            welcomeMessage = `Describe what you'd like to create using <strong>${modelName}</strong>. Attach a frame with 📎 to use it as a style reference.`;
         }
 
         setMessages([{ role: 'assistant', content: welcomeMessage, isHtml: true }]);
@@ -398,7 +398,7 @@ function ChatInterface({
 
     const selectedModel = availableModels.find(m => m.id === currentModelId);
     const selectedSystem = availableDesignSystems.find(s => s.id === currentDesignSystemId);
-    const visibleModels = hasPurchased ? availableModels : availableModels.filter((model) => model.isFree);
+    const canUseModel = (model: { isFree?: boolean }) => model.isFree || hasPurchased;
 
     const autoResize = useCallback((el: HTMLTextAreaElement | null) => {
         if (!el) return;
@@ -441,7 +441,7 @@ function ChatInterface({
                                         }}
                                     />
                                 )}
-                                {msg.cost && <CostBreakdown cost={msg.cost} />}
+                                {/* {msg.cost && <CostBreakdown cost={msg.cost} />} */}
                                 {(msg.designData || msg.previewHtml) && (
                                     <DesignPreview
                                         designData={msg.designData}
@@ -574,25 +574,33 @@ function ChatInterface({
 
                         {modelDropdownOpen && (
                             <div className="sel-dropdown show" onClick={(e) => e.stopPropagation()}>
-                                {visibleModels.map(model => (
-                                    <div
-                                        key={model.id}
-                                        className={`sd-item ${currentModelId === model.id ? 'sel' : ''}`}
-                                        onClick={() => {
-                                            dispatch({ type: 'SET_MODEL', modelId: model.id });
-                                            setModelDropdownOpen(false);
-                                        }}
-                                    >
-                                        <span className="sd-icon"></span>
-                                        <div style={{ flex: 1 }}>{model.name}</div>
-                                        <span className="sd-check">✓</span>
-                                    </div>
-                                ))}
+                                {availableModels.map(model => {
+                                    const unlocked = canUseModel(model);
+                                    return (
+                                        <div
+                                            key={model.id}
+                                            className={`sd-item ${currentModelId === model.id ? 'sel' : ''} ${!unlocked ? 'sd-item-locked' : ''}`}
+                                            onClick={() => {
+                                                if (!unlocked) {
+                                                    dispatch({ type: 'OPEN_BUY_POINTS_MODAL' });
+                                                    setModelDropdownOpen(false);
+                                                    return;
+                                                }
+                                                dispatch({ type: 'SET_MODEL', modelId: model.id });
+                                                setModelDropdownOpen(false);
+                                            }}
+                                        >
+                                            <span className="sd-icon">{unlocked ? '' : '🔒'}</span>
+                                            <div style={{ flex: 1 }}>{model.name}</div>
+                                            <span className="sd-check">✓</span>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         )}
                     </button>
 
-                    <button
+                    {/* <button
                         className="selector-pill ds"
                         onClick={(e) => {
                             e.stopPropagation();
@@ -620,7 +628,7 @@ function ChatInterface({
                                 ))}
                             </div>
                         )}
-                    </button>
+                    </button> */}
 
                     <span className="selectors-spacer" />
                     <span className="chat-hint-inline">↵ Send</span>

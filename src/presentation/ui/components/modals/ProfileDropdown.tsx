@@ -83,12 +83,12 @@ export function ProfileDropdown({
                 Buy Points / Plan
             </button>
 
-            <button className="profile-dd-item" onClick={() => { onClose(); onImportExport(); }}>
+            {/* <button className="profile-dd-item" onClick={() => { onClose(); onImportExport(); }}>
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <path d="M9.5 5.5L7 3 4.5 5.5M7 3v7M2.5 11h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 Import / Export
-            </button>
+            </button> */}
 
             <div className="profile-dd-divider" />
 
@@ -107,7 +107,7 @@ export function ProfileDropdown({
                 Privacy Policy
             </button>
 
-            <button className="profile-dd-item" onClick={() => { onClose(); window.location.href = 'mailto:info@kuroworks.com'; }}>
+            <button className="profile-dd-item" onClick={() => { onClose(); window.open('https://rio-app.design/#contact', '_blank', 'noopener,noreferrer'); }}>
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <path d="M2.5 4.5h9M2.5 9.5h9M1.5 7h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                 </svg>
