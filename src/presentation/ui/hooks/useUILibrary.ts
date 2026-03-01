@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useAppContext } from '../context/AppContext.tsx';
 import { useApiClient } from './useApiClient.ts';
-import { reportErrorAsync } from '../errorReporter.js';
+import { reportErrorAsync } from '../utils/errorReporter.js';
 import { API_PATHS, FALLBACK_PREVIEW_SVG } from '../utils/constants';
 import type { Project, UIComponent, DeleteTarget, UseUILibraryReturn, SendMessageFn } from '../types';
 
@@ -24,6 +24,7 @@ export function useUILibrary(callerName: string): UseUILibraryReturn {
     const [isCreatingProject, setIsCreatingProject] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState<DeleteTarget>(null);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [importingComponentId, setImportingComponentId] = useState<string | null>(null);
 
     const selectedProject = useMemo(
         () => projects.find(p => p.id === selectedProjectId) ?? null,
@@ -130,11 +131,24 @@ export function useUILibrary(callerName: string): UseUILibraryReturn {
         }
     }, [deleteConfirm, apiDelete, loadProjects, loadComponents, selectedProjectId, showStatus, callerName]);
 
+    useEffect(() => {
+        function onMessage(event: MessageEvent) {
+            const msg = event.data?.pluginMessage;
+            if (!msg) return;
+            if (msg.type === 'import-success' || msg.type === 'import-error') {
+                setImportingComponentId(null);
+            }
+        }
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, []);
+
     const handleImportComponent = useCallback((component: UIComponent, sendMessage: SendMessageFn) => {
         if (!component?.designJson) {
             showStatus('⚠️ Missing design JSON for this component', 'warning');
             return;
         }
+        setImportingComponentId(component.id);
         sendMessage('import-ui-library-component', { designJson: component.designJson as Record<string, unknown> });
     }, [showStatus]);
 
@@ -155,6 +169,7 @@ export function useUILibrary(callerName: string): UseUILibraryReturn {
         isCreatingProject,
         deleteConfirm,
         isDeleting,
+        importingComponentId,
         setSelectedProjectId,
         setShowCreateProjectModal,
         setNewProjectName,
