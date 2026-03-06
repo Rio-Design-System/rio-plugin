@@ -338,10 +338,10 @@ function ChatInterface({
         setIsGenerating(false);
         removeLoadingMessages();
         playNotificationSound();
-        addMessage('assistant', `Error: ${msg.error as string}`);
+        addMessage('assistant', `${msg.error as string}`);
 
         const errorText = `${msg.error || ''}`.toLowerCase();
-        if (msg.statusCode === 402 || errorText.includes('insufficient') || errorText.includes('purchase points')) {
+        if (msg.statusCode === 402 || errorText.includes('insufficient') || errorText.includes('purchase credits')) {
             dispatch({ type: 'OPEN_BUY_POINTS_MODAL' });
         }
     }, [removeLoadingMessages, addMessage, dispatch]);
