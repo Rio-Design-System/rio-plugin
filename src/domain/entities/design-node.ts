@@ -1,4 +1,4 @@
-import { Fill } from './fill';
+import { Fill, VariableRef } from './fill';
 import { Effect } from './effect';
 import { NodeType, LayoutMode, TextAutoResize, TextCase, TextDecoration, ConstraintType, LayoutAlign, LayoutPositioning, StrokeCap, StrokeJoin } from '../../shared/types/node-types';
 
@@ -146,6 +146,36 @@ export interface OverrideInfo {
 }
 
 /**
+ * Variable bindings on a node's scalar properties.
+ * Keys match the field names accepted by node.setBoundVariable() in the Figma Plugin API.
+ */
+export interface NodeBoundVariables {
+  // FLOAT
+  opacity?: VariableRef;
+  width?: VariableRef;
+  height?: VariableRef;
+  paddingTop?: VariableRef;
+  paddingRight?: VariableRef;
+  paddingBottom?: VariableRef;
+  paddingLeft?: VariableRef;
+  itemSpacing?: VariableRef;
+  counterAxisSpacing?: VariableRef;
+  cornerRadius?: VariableRef;
+  topLeftRadius?: VariableRef;
+  topRightRadius?: VariableRef;
+  bottomLeftRadius?: VariableRef;
+  bottomRightRadius?: VariableRef;
+  fontSize?: VariableRef;
+  letterSpacing?: VariableRef;
+  lineHeight?: VariableRef;
+  strokeWeight?: VariableRef;
+  // BOOLEAN
+  visible?: VariableRef;
+  // STRING
+  characters?: VariableRef;
+}
+
+/**
  * Comprehensive Design Node interface
  * Represents ALL Figma node properties for lossless export/import
  */
@@ -164,6 +194,10 @@ export interface DesignNode {
 
   // Layer ordering (for preserving z-index during export/import)
   _layerIndex?: number;
+  // Figma node ID (for on-demand child fetching)
+  _nodeId?: string;
+  // Shallow export flag: indicates node has children that can be fetched on demand
+  hasChildren?: boolean;
 
   // Fills and strokes
   fills?: Fill[];
@@ -191,6 +225,16 @@ export interface DesignNode {
   locked?: boolean;
   isMask?: boolean;
   maskType?: 'ALPHA' | 'VECTOR' | 'LUMINANCE';
+
+  // Global style references (all Figma style types)
+  fillStyleId?: string;
+  strokeStyleId?: string;
+  effectStyleId?: string;
+  gridStyleId?: string;
+  textStyleId?: string;
+
+  // Figma Variable bindings for scalar node properties
+  boundVariables?: NodeBoundVariables;
 
   // Constraints
   constraints?: {
@@ -271,8 +315,11 @@ export interface DesignNode {
   // Children
   children?: DesignNode[];
 
-  // Image data (for embedded images)
-  imageData?: string;
+  // Image data (for embedded images) (disabled)
+  // imageData?: string;
+
+  // SVG URL for icon nodes (uses figma.createNodeFromSvg instead of image fill)
+  svgUrl?: string;
 
   // Instance-specific (for finding local components)
   _mainComponentNodeId?: string;

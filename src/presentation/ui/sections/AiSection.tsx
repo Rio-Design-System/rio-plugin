@@ -5,6 +5,7 @@ import { reportErrorAsync } from '../utils';
 import ChatInterface from './ChatInterface.tsx';
 import PrototypePanel from './PrototypePanel.tsx';
 import ProjectsSection from './ProjectsSection.tsx';
+import PinnedComponentPicker from '../components/shared/PinnedComponentPicker.tsx';
 import { Frame, UIComponent, PluginMessage, SendMessageFn } from '../types/index.ts';
 import '../styles/ModeBar.css';
 import '../styles/UILibraryTab.css';
@@ -51,6 +52,11 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
     const [framesLoaded, setFramesLoaded] = useState(false);
 
     const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
+    const [pinnedComponentNames, setPinnedComponentNames] = useState<Set<string>>(new Set());
+    const [isNodeJsonLoading, setIsNodeJsonLoading] = useState(false);
+    const [pinnedPickerOpen, setPinnedPickerOpen] = useState(false);
+    const [pickerShallowJson, setPickerShallowJson] = useState<Record<string, unknown> | null>(null);
+    const [childrenLoading, setChildrenLoading] = useState(false);
 
     const loadFrames = useCallback(() => {
         setFramesLoading(true);
@@ -68,14 +74,15 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
     }, [framesLoaded, loadFrames]);
 
     const toggleFrameSelection = useCallback((frameId: string) => {
-        if (currentMode !== 'prototype') {
-            // Create/edit mode: only one frame at a time
+        if (currentMode === 'edit') {
+            // Edit mode: only one frame at a time
             setSelectedFrameIds(prev => {
                 if (prev.has(frameId) && prev.size === 1) return new Set();
                 return new Set([frameId]);
             });
             return;
         }
+        // Create mode (by-reference) and prototype: allow multiple
         setSelectedFrameIds(prev => {
             const next = new Set(prev);
             if (next.has(frameId)) {
@@ -103,6 +110,14 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
         });
     }, []);
 
+    const clearSelectedFrames = useCallback(() => {
+        setSelectedFrameIds(new Set());
+        if (currentMode === 'edit') {
+            setSelectedLayerForEdit(null);
+            setSelectedLayerJson(null);
+        }
+    }, [currentMode]);
+
     const handleAttachComponent = useCallback((component: UIComponent) => {
         // Toggle: detach if already attached
         if (selectedFrameIds.has(component.id)) {
@@ -122,10 +137,67 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
         setSelectedFrameIds(prev => new Set([...prev, component.id]));
     }, [state.selectionInfo, selectedFrameIds, notify]);
 
-    const selectedFrames = availableFrames.filter(f => selectedFrameIds.has(f.id));
+    const selectedFrames = [...selectedFrameIds]
+        .map(id => availableFrames.find(f => f.id === id))
+        .filter((f): f is Frame => f !== undefined);
 
     // Automatically use by-reference API when a frame is attached in create mode
     const isBasedOnExistingMode = currentMode === 'create' && selectedFrames.length > 0;
+
+    // Reset pinned components when the reference frame changes
+    const prevSelectedFrameIdsRef = React.useRef(selectedFrameIds);
+    React.useEffect(() => {
+        const prev = prevSelectedFrameIdsRef.current;
+        if (prev !== selectedFrameIds) {
+            // Compare contents, not identity — selection-changed creates new Set objects frequently
+            const changed = prev.size !== selectedFrameIds.size || [...prev].some(id => !selectedFrameIds.has(id));
+            if (changed) {
+                setPinnedComponentNames(new Set());
+                setPinnedPickerOpen(false);
+                setPickerShallowJson(null);
+                fetchingNodeIdRef.current = null;
+            }
+            prevSelectedFrameIdsRef.current = selectedFrameIds;
+        }
+    }, [selectedFrameIds]);
+
+    const handleTogglePinComponent = useCallback((name: string) => {
+        setPinnedComponentNames(prev => {
+            const next = new Set(prev);
+            next.has(name) ? next.delete(name) : next.add(name);
+            return next;
+        });
+    }, []);
+
+    // Fetch shallow JSON on demand for the picker (first level only)
+    const fetchingNodeIdRef = React.useRef<string | null>(null);
+
+    const fetchShallowJsonIfNeeded = useCallback(() => {
+        if (!isBasedOnExistingMode) return;
+        const ref = selectedFrames[0];
+        if (!ref) return;
+        if (pickerShallowJson) return; // already loaded
+        if (fetchingNodeIdRef.current === ref.id) return; // already requested
+        fetchingNodeIdRef.current = ref.id;
+        setIsNodeJsonLoading(true);
+        sendMessage('request-node-shallow-json', { nodeId: ref.id, nodeName: ref.name });
+    }, [isBasedOnExistingMode, selectedFrames, sendMessage, pickerShallowJson]);
+
+    const handleRequestChildren = useCallback((nodeId: string) => {
+        setChildrenLoading(true);
+        sendMessage('request-node-children-shallow', { nodeId });
+    }, [sendMessage]);
+
+    const handleGenerateRequest = useCallback((_message: string) => {
+        if (!_message) return;
+        fetchShallowJsonIfNeeded();
+        setPinnedPickerOpen(true);
+    }, [fetchShallowJsonIfNeeded]);
+
+    const handleStartGeneration = useCallback(() => {
+        setPinnedPickerOpen(false);
+        ChatInterface.triggerGeneration?.();
+    }, []);
 
     const handleModeSwitch = useCallback((mode: Mode) => {
         if (mode === currentMode) return;
@@ -177,16 +249,26 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
                     const newFrames = selectedNodes.filter(n => !existingIds.has(n.id));
                     return newFrames.length > 0 ? [...prev, ...newFrames] : prev;
                 });
-
-                // Preserve library-attached component IDs (have designJson), replace Figma selection IDs
-                const libraryIds = new Set(availableFrames.filter(f => f.designJson != null).map(f => f.id));
-                const preserved = [...selectedFrameIds].filter(id => libraryIds.has(id));
-                setSelectedFrameIds(new Set([...preserved, ...nodes.map(n => n.id)]));
-            } else {
-                // Clear Figma selections but keep library-attached components
-                const libraryIds = new Set(availableFrames.filter(f => f.designJson != null).map(f => f.id));
-                setSelectedFrameIds(new Set([...selectedFrameIds].filter(id => libraryIds.has(id))));
             }
+
+            setSelectedFrameIds(prev => {
+                const libraryIds = new Set(availableFrames.filter(f => f.designJson != null).map(f => f.id));
+                const preservedLibraryIds = [...prev].filter(id => libraryIds.has(id));
+
+                if (currentMode === 'edit') {
+                    return nodes.length > 0
+                        ? new Set([...preservedLibraryIds, ...nodes.map(n => n.id)])
+                        : new Set(preservedLibraryIds);
+                }
+
+                // In create/prototype flows, keep previously attached canvas references
+                // so each new click adds another reference instead of replacing older ones.
+                if (nodes.length === 0) {
+                    return prev;
+                }
+
+                return new Set([...prev, ...nodes.map(n => n.id)]);
+            });
         },
 
         'layer-selected-for-edit': (msg: PluginMessage) => {
@@ -205,6 +287,8 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
             const layerId = msg.layerId as string;
             const layerName = msg.layerName as string;
             const layerJson = msg.layerJson;
+            setIsNodeJsonLoading(false);
+            fetchingNodeIdRef.current = null;
             setAvailableFrames(prev => {
                 if (prev.some(f => f.id === layerId)) {
                     return prev.map(f => f.id === layerId ? { ...f, designJson: layerJson } : f);
@@ -215,6 +299,36 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
             setCurrentMode('create');
             setView('chat');
             setSystemMessages(prev => [...prev, { badge: 'Reference Added' }]);
+        },
+
+        'node-shallow-json': (msg: PluginMessage) => {
+            setIsNodeJsonLoading(false);
+            fetchingNodeIdRef.current = null;
+            setPickerShallowJson(msg.shallowJson as Record<string, unknown>);
+        },
+
+        'node-children-shallow': (msg: PluginMessage) => {
+            setChildrenLoading(false);
+            const parentNodeId = msg.parentNodeId as string;
+            const children = msg.children as Array<Record<string, unknown>>;
+            // Build a synthetic node for the picker to drill into
+            setPickerShallowJson(prev => {
+                if (!prev) return prev;
+                // Find and update the child node in the shallow tree to include its children
+                const updateChildren = (node: Record<string, unknown>): Record<string, unknown> => {
+                    if ((node as any)._nodeId === parentNodeId) {
+                        return { ...node, children };
+                    }
+                    if (Array.isArray(node.children)) {
+                        return {
+                            ...node,
+                            children: (node.children as Array<Record<string, unknown>>).map(updateChildren),
+                        };
+                    }
+                    return node;
+                };
+                return updateChildren(prev) as Record<string, unknown>;
+            });
         },
 
         'ai-chat-response': (msg: PluginMessage) => ChatInterface.handleResponse?.(msg),
@@ -294,9 +408,13 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
                     sendMessage={sendMessage}
                     selectedFrames={selectedFrames}
                     onRemoveFrame={removeFrame}
+                    onClearFrames={clearSelectedFrames}
                     onToggleFramePicker={toggleFramePicker}
                     framePickerOpen={framePickerOpen}
                     systemMessages={systemMessages}
+                    pinnedComponentNames={pinnedComponentNames}
+                    isNodeJsonLoading={isNodeJsonLoading}
+                    onRequestGenerate={handleGenerateRequest}
                 />
             )}
 
@@ -306,6 +424,51 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
                     onBack={handleBackFromPrototype}
                     sendMessage={sendMessage}
                 />
+            )}
+
+            {/* Pinned Component Picker Overlay */}
+            {isBasedOnExistingMode && (
+                <div className={`frame-picker-overlay ${pinnedPickerOpen ? 'show' : ''}`}>
+                    <div className="fp-backdrop" onClick={() => setPinnedPickerOpen(false)} />
+                    <div className="fp-panel fp-panel--pinned">
+                        <div className="fp-header">
+                            <div className="fp-title">
+                                Select the parts you want to keep the same
+                                {pinnedComponentNames.size > 0 && (
+                                    <span className="pinned-picker-badge">{pinnedComponentNames.size}</span>
+                                )}
+                            </div>
+                            <div className="fp-actions">
+                                <button className="fp-close" onClick={() => setPinnedPickerOpen(false)}>✕</button>
+                            </div>
+                        </div>
+                        <div className="fp-list">
+                            {isNodeJsonLoading || !pickerShallowJson ? (
+                                <div className="fp-loading">
+                                    <div className="loading-spinner" />
+                                    <span>Loading components...</span>
+                                </div>
+                            ) : (
+                                <PinnedComponentPicker
+                                    referenceDesignJson={pickerShallowJson}
+                                    pinnedNames={pinnedComponentNames}
+                                    onToggle={handleTogglePinComponent}
+                                    onRequestChildren={handleRequestChildren}
+                                    childrenLoading={childrenLoading}
+                                />
+                            )}
+                        </div>
+                        <div className="fp-footer">
+                            <button
+                                className="btn-primary fp-start-btn"
+                                onClick={handleStartGeneration}
+                                disabled={isNodeJsonLoading}
+                            >
+                                Start Generation
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Frame Picker Overlay */}

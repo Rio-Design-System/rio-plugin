@@ -37,17 +37,18 @@
 .message {
     display: flex;
     gap: 6px;
-    max-width: 88%;
     animation: fadeIn 0.2s var(--ease);
 }
 
 .message.user {
     align-self: flex-end;
     flex-direction: row-reverse;
+    width: 85%;
 }
 
 .message.assistant {
     align-self: flex-start;
+    width: 85%;
 }
 
 /* AI Avatar */
@@ -99,6 +100,7 @@
     color: var(--text-primary);
     border-bottom-left-radius: 3px;
     border: 1px solid var(--border-light);
+    width: 100%;
 }
 
 .message-content strong {

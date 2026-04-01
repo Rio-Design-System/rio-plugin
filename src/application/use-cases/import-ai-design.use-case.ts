@@ -57,6 +57,9 @@ export class ImportAIDesignUseCase {
         if (nodeData && typeof nodeData === 'object') {
           const node = await this.nodeRepository.createNode(nodeData);
           if (node) {
+            if (createdNodes.length === 0) {
+              this.nodeRepository.focusOnNodes([node]);
+            }
             createdNodes.push(node);
           }
         }
@@ -67,6 +70,9 @@ export class ImportAIDesignUseCase {
         if (nodeData && typeof nodeData === 'object') {
           const node = await this.nodeRepository.createNode(nodeData);
           if (node) {
+            if (createdNodes.length === 0) {
+              this.nodeRepository.focusOnNodes([node]);
+            }
             createdNodes.push(node);
           }
         }
@@ -159,42 +165,23 @@ export class ImportAIDesignUseCase {
   } {
     if (existingDesigns.length === 0) {
       return {
-        startX: 100,
-        startY: 100,
+        startX: 0,
+        startY: 0,
         gridWidth: 4,
         gridHeight: 4
       };
     }
 
     let maxX = 0;
-    let maxY = 0;
 
     for (const design of existingDesigns) {
       const rightEdge = design.x + design.width;
-      const bottomEdge = design.y + design.height;
-
       if (rightEdge > maxX) maxX = rightEdge;
-      if (bottomEdge > maxY) maxY = bottomEdge;
-    }
-
-    const gridSpacing = 400;
-    const pagePadding = 100;
-
-    const newX = maxX + pagePadding;
-
-    const viewportWidth = 2000;
-    if (newX > viewportWidth) {
-      return {
-        startX: pagePadding,
-        startY: maxY + pagePadding,
-        gridWidth: 4,
-        gridHeight: 4
-      };
     }
 
     return {
-      startX: newX,
-      startY: pagePadding,
+      startX: maxX + ImportAIDesignUseCase.PAGE_SPACING,
+      startY: 0,
       gridWidth: 4,
       gridHeight: 4
     };
