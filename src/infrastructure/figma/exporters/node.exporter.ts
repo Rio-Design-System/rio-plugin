@@ -1,5 +1,5 @@
-import { DesignNode, VectorPath, VectorNetwork, TextSegment, LayoutGrid } from '../../../domain/entities/design-node';
-import { Fill } from '../../../domain/entities/fill';
+import { DesignNode, NodeBoundVariables, VectorPath, VectorNetwork, TextSegment, LayoutGrid } from '../../../domain/entities/design-node';
+import { Fill, FillBoundVariables, VariableRef } from '../../../domain/entities/fill';
 import { Effect } from '../../../domain/entities/effect';
 
 /**
@@ -17,9 +17,54 @@ export class NodeExporter {
   }
 
   /**
+   * Export a node with only its direct children's basic metadata (no deep recursion).
+   * Each child includes _nodeId so we can fetch its children on demand later.
+   */
+  async exportShallow(node: SceneNode, layerIndex: number = 0): Promise<DesignNode | null> {
+    try {
+      const base = this.getBaseProperties(node, layerIndex);
+      const result: Partial<DesignNode> = {
+        ...base,
+        type: node.type as DesignNode['type'],
+      };
+
+      // Add dimensions for the root node
+      if ('width' in node) result.width = (node as any).width;
+      if ('height' in node) result.height = (node as any).height;
+
+      // Export direct children with minimal info only
+      if ('children' in node) {
+        const container = node as FrameNode | GroupNode | ComponentNode | InstanceNode;
+        if (container.children.length > 0) {
+          result.children = container.children.map((child, i) => {
+            const childHasChildren = 'children' in child && (child as any).children?.length > 0;
+            const childNode: any = {
+              name: child.name,
+              type: child.type,
+              x: child.x,
+              y: child.y,
+              _nodeId: child.id,
+              _layerIndex: i,
+              hasChildren: childHasChildren,
+            };
+            if ('width' in child) childNode.width = (child as any).width;
+            if ('height' in child) childNode.height = (child as any).height;
+            return childNode as DesignNode;
+          });
+        }
+      }
+
+      return result as DesignNode;
+    } catch (error) {
+      console.error(`Error shallow-exporting node ${node.name}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Export a node with all its properties
    */
-  async export(node: SceneNode, layerIndex: number = 0): Promise<DesignNode | null> {
+  async export(node: SceneNode, layerIndex: number = 0, isNested: boolean = false): Promise<DesignNode | null> {
     try {
       switch (node.type) {
         case 'FRAME':
@@ -31,7 +76,7 @@ export class NodeExporter {
         case 'COMPONENT_SET':
           return this.exportComponentSet(node, layerIndex);
         case 'INSTANCE':
-          return this.exportInstance(node, layerIndex);
+          return this.exportInstance(node, layerIndex, isNested);
         case 'SECTION':
           return this.exportSection(node, layerIndex);
         case 'RECTANGLE':
@@ -149,7 +194,7 @@ export class NodeExporter {
     return result as DesignNode;
   }
 
-  private async exportInstance(node: InstanceNode, layerIndex: number): Promise<DesignNode> {
+  private async exportInstance(node: InstanceNode, layerIndex: number, isNested: boolean = false): Promise<DesignNode> {
     const result: Partial<DesignNode> = {
       ...this.getBaseProperties(node, layerIndex),
       type: 'INSTANCE',
@@ -162,28 +207,34 @@ export class NodeExporter {
       clipsContent: node.clipsContent,
     };
 
-    // Store main component reference (use async method for dynamic-page documentAccess)
-    try {
-      const mainComponent = await node.getMainComponentAsync();
-      if (mainComponent) {
-        result.mainComponentId = mainComponent.key;
-        // Also store the node ID for local component lookup
-        (result as any)._mainComponentNodeId = mainComponent.id;
+    // Only resolve main component for top-level instances — nested ones are fully
+    // described by their exported children and the slow async lookup isn't needed.
+    if (!isNested) {
+      try {
+        const mainComponent = await node.getMainComponentAsync();
+        if (mainComponent) {
+          result.mainComponentId = mainComponent.key;
+          (result as any)._mainComponentNodeId = mainComponent.id;
+        }
+      } catch (error) {
+        console.warn('Could not get main component for instance:', error);
       }
-    } catch (error) {
-      console.warn('Could not get main component for instance:', error);
     }
 
     // Export component property overrides
-    if (node.componentProperties && Object.keys(node.componentProperties).length > 0) {
-      const componentProps: Record<string, any> = {};
-      for (const [key, prop] of Object.entries(node.componentProperties)) {
-        componentProps[key] = {
-          type: prop.type,
-          value: prop.value,
-        };
+    try {
+      if (node.componentProperties && Object.keys(node.componentProperties).length > 0) {
+        const componentProps: Record<string, any> = {};
+        for (const [key, prop] of Object.entries(node.componentProperties)) {
+          componentProps[key] = {
+            type: prop.type,
+            value: prop.value,
+          };
+        }
+        result.componentProperties = componentProps;
       }
-      result.componentProperties = componentProps;
+    } catch (error) {
+      console.warn('Could not get componentProperties for instance:', node.name, error);
     }
 
     // Export overrides
@@ -192,6 +243,10 @@ export class NodeExporter {
         id: o.id,
         overriddenFields: [...o.overriddenFields],
       }));
+    }
+
+    if (node.children.length > 0) {
+      result.children = await this.exportChildren(node.children, true);
     }
 
     return result as DesignNode;
@@ -356,6 +411,10 @@ export class NodeExporter {
       result.textSegments = segments;
     }
 
+    // Export text style ID
+    const tsi = (node as any).textStyleId;
+    if (tsi && typeof tsi === 'string') result.textStyleId = tsi;
+
     return result as DesignNode;
   }
 
@@ -368,6 +427,7 @@ export class NodeExporter {
       x: node.x,
       y: node.y,
       _layerIndex: layerIndex,
+      _nodeId: node.id,
     };
 
     if ('width' in node) result.width = node.width;
@@ -449,6 +509,20 @@ export class NodeExporter {
         }
       }
     }
+
+    // Export style IDs (paint and effect styles)
+    const fsi = (node as any).fillStyleId;
+    if (fsi && typeof fsi === 'string') result.fillStyleId = fsi;
+
+    const ssi = (node as any).strokeStyleId;
+    if (ssi && typeof ssi === 'string') result.strokeStyleId = ssi;
+
+    const esi = (node as any).effectStyleId;
+    if (esi && typeof esi === 'string') result.effectStyleId = esi;
+
+    // Export node-level variable bindings (FLOAT / BOOLEAN / STRING)
+    const nodeBoundVars = await this.exportNodeBoundVariables(node as SceneNode);
+    if (nodeBoundVars) result.boundVariables = nodeBoundVars;
 
     return result;
   }
@@ -673,6 +747,10 @@ export class NodeExporter {
       }));
     }
 
+    // Export grid style ID
+    const gsi = (node as any).gridStyleId;
+    if (gsi && typeof gsi === 'string') result.gridStyleId = gsi;
+
     // Export layout grids
     if (node.layoutGrids && node.layoutGrids.length > 0) {
       result.layoutGrids = node.layoutGrids.map(grid => {
@@ -820,7 +898,7 @@ export class NodeExporter {
     switch (paint.type) {
       case 'SOLID': {
         const solidPaint = paint as SolidPaint;
-        return {
+        const fill: Fill = {
           ...baseFill,
           color: {
             r: solidPaint.color.r,
@@ -828,6 +906,24 @@ export class NodeExporter {
             b: solidPaint.color.b,
           },
         };
+
+        // Capture variable bindings on this paint (color / opacity)
+        const pv = (solidPaint as any).boundVariables;
+        if (pv && typeof pv === 'object') {
+          const bv: FillBoundVariables = {};
+          let hasBv = false;
+          if (pv.color?.type === 'VARIABLE_ALIAS') {
+            const ref = await this.variableAliasToRef(pv.color as VariableAlias);
+            if (ref) { bv.color = ref; hasBv = true; }
+          }
+          if (pv.opacity?.type === 'VARIABLE_ALIAS') {
+            const ref = await this.variableAliasToRef(pv.opacity as VariableAlias);
+            if (ref) { bv.opacity = ref; hasBv = true; }
+          }
+          if (hasBv) fill.boundVariables = bv;
+        }
+
+        return fill;
       }
 
       case 'GRADIENT_LINEAR':
@@ -865,23 +961,23 @@ export class NodeExporter {
         if (imagePaint.imageHash) {
           fill.imageHash = imagePaint.imageHash;
 
-          // Try to get base64 image data
-          if (!this.imageCache.has(imagePaint.imageHash)) {
-            try {
-              const image = figma.getImageByHash(imagePaint.imageHash);
-              if (image) {
-                const bytes = await image.getBytesAsync();
-                const base64 = this.bytesToBase64(bytes);
-                this.imageCache.set(imagePaint.imageHash, base64);
-              }
-            } catch (e) {
-              console.warn('Failed to export image:', e);
-            }
-          }
+          // imageData export disabled — not included in exported JSON
+          // if (!this.imageCache.has(imagePaint.imageHash)) {
+          //   try {
+          //     const image = figma.getImageByHash(imagePaint.imageHash);
+          //     if (image) {
+          //       const bytes = await image.getBytesAsync();
+          //       const base64 = this.bytesToBase64(bytes);
+          //       this.imageCache.set(imagePaint.imageHash, base64);
+          //     }
+          //   } catch (e) {
+          //     console.warn('Failed to export image:', e);
+          //   }
+          // }
 
-          if (this.imageCache.has(imagePaint.imageHash)) {
-            fill.imageData = this.imageCache.get(imagePaint.imageHash);
-          }
+          // if (this.imageCache.has(imagePaint.imageHash)) {
+          //   fill.imageData = this.imageCache.get(imagePaint.imageHash);
+          // }
         }
 
         if (imagePaint.imageTransform) {
@@ -969,6 +1065,43 @@ export class NodeExporter {
       default:
         return baseFill;
     }
+  }
+
+  // ==================== VARIABLE EXPORT ====================
+
+  private async variableAliasToRef(alias: VariableAlias): Promise<VariableRef | null> {
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(alias.id);
+      if (!variable) return null;
+      return { id: variable.id, key: variable.key };
+    } catch {
+      return null;
+    }
+  }
+
+  private async exportNodeBoundVariables(node: SceneNode): Promise<NodeBoundVariables | undefined> {
+    const raw = (node as any).boundVariables;
+    if (!raw || typeof raw !== 'object') return undefined;
+
+    const FIELDS: (keyof NodeBoundVariables)[] = [
+      'opacity', 'width', 'height',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+      'itemSpacing', 'counterAxisSpacing',
+      'cornerRadius', 'topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius',
+      'fontSize', 'letterSpacing', 'lineHeight', 'strokeWeight',
+      'visible', 'characters',
+    ];
+
+    const result: NodeBoundVariables = {};
+    let hasAny = false;
+    for (const field of FIELDS) {
+      const alias = raw[field];
+      if (alias?.type === 'VARIABLE_ALIAS') {
+        const ref = await this.variableAliasToRef(alias as VariableAlias);
+        if (ref) { (result as any)[field] = ref; hasAny = true; }
+      }
+    }
+    return hasAny ? result : undefined;
   }
 
   // ==================== EFFECTS EXPORT ====================
@@ -1174,12 +1307,12 @@ export class NodeExporter {
 
   // ==================== CHILDREN EXPORT ====================
 
-  private async exportChildren(children: readonly SceneNode[]): Promise<DesignNode[]> {
+  private async exportChildren(children: readonly SceneNode[], isNested: boolean = false): Promise<DesignNode[]> {
     const result: DesignNode[] = [];
 
     for (let i = 0; i < children.length; i++) {
       const child = children[i];
-      const exported = await this.export(child, i);
+      const exported = await this.export(child, i, isNested);
       if (exported) {
         result.push(exported);
       }

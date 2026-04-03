@@ -30,7 +30,6 @@ interface ChatMessage {
     isLoading?: boolean;
     isHtml?: boolean;
     designData?: unknown;
-    previewHtml?: string | null;
     cost?: CostInfo | null;
     isEditMode?: boolean;
     layerInfo?: LayerInfo | null;
@@ -52,9 +51,13 @@ interface ChatInterfaceProps {
     sendMessage: SendMessageFn;
     selectedFrames?: Frame[];
     onRemoveFrame?: (id: string) => void;
+    onClearFrames?: () => void;
     onToggleFramePicker?: () => void;
     framePickerOpen?: boolean;
     systemMessages?: SystemMessage[];
+    pinnedComponentNames?: Set<string>;
+    isNodeJsonLoading?: boolean;
+    onRequestGenerate?: (message: string) => void;
 }
 
 function ChatInterface({
@@ -65,16 +68,20 @@ function ChatInterface({
     sendMessage,
     selectedFrames = [],
     onRemoveFrame,
+    onClearFrames,
     onToggleFramePicker,
     framePickerOpen = false,
     systemMessages = [],
+    pinnedComponentNames,
+    isNodeJsonLoading = false,
+    onRequestGenerate,
 }: ChatInterfaceProps): React.JSX.Element {
     const { state, dispatch } = useAppContext();
     const { currentModelId, availableModels, currentDesignSystemId, availableDesignSystems, hasPurchased } = state;
     const { updateSubscription, updatePointsBalance } = useAuth();
 
     const [messages, setMessages] = useState<ChatMessage[]>([]);
-    const [conversationHistory, setConversationHistory] = useState<Array<{ role: string; content: string }>>([]);
+    // const [conversationHistory, setConversationHistory] = useState<Array<{ role: string; content: string }>>([]);
     const [inputValue, setInputValue] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
     const [isComposing, setIsComposing] = useState(false);
@@ -88,6 +95,9 @@ function ChatInterface({
 
     const updateSubscriptionRef = useRef(updateSubscription);
     const updatePointsBalanceRef = useRef(updatePointsBalance);
+
+    const [attachedImage, setAttachedImage] = useState<string | null>(null);
+    const imageInputRef = useRef<HTMLInputElement>(null);
 
     const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
     const [dsDropdownOpen, setDsDropdownOpen] = useState(false);
@@ -135,11 +145,11 @@ function ChatInterface({
         } else if (currentMode === 'prototype') {
             welcomeMessage = `Prototype Mode: Attach 2 or more frames with 📎 to generate connections between them. Then click Send. 🔗`;
         } else {
-            welcomeMessage = `What would you like to create with <strong>${modelName}</strong>? Attach a frame with 📎 to use it as a style reference.`;
+            welcomeMessage = `What would you like to create with <strong>${modelName}</strong> + <strong>${systemName}</strong>? Attach an image with 📎 to generate a design based on it.`;
         }
 
         setMessages([{ role: 'assistant', content: welcomeMessage, isHtml: true }]);
-        setConversationHistory([]);
+        // setConversationHistory([]);
 
         setTimeout(() => inputRef.current?.focus(), 100);
     }, [currentMode, currentModelId, currentDesignSystemId, availableModels, availableDesignSystems]);
@@ -151,9 +161,12 @@ function ChatInterface({
         const modelName = model?.name || defaultModel.name;
         const systemName = system?.name || defaultDesignSystem.name;
 
+        const refLabel = selectedFrames.length > 1
+            ? `<strong>${selectedFrames.length} references</strong>`
+            : `<strong>"${selectedFrames[0]?.name}"</strong>`;
         const welcomeMessage = selectedFrames.length > 0
-            ? `Designing based on <strong>"${selectedFrames[0].name}"</strong> as your style reference. Describe what you'd like to create with <strong>${modelName}</strong>.`
-            : `What would you like to create with <strong>${modelName}</strong>? Attach a frame with 📎 to use it as a style reference.`;
+            ? `Designing based on ${refLabel} as your style reference. Describe what you'd like to create with <strong>${modelName}</strong> + <strong>${systemName}</strong>.`
+            : `What would you like to create with <strong>${modelName}</strong> + <strong>${systemName}</strong>? Attach an image with 📎 to generate a design based on it.`;
 
         setMessages(prev => {
             if (prev.length === 0) return prev;
@@ -189,7 +202,6 @@ function ChatInterface({
             isLoading: opts.isLoading || false,
             isHtml: opts.isHtml || false,
             designData: opts.designData || null,
-            previewHtml: opts.previewHtml || null,
             cost: opts.cost || null,
             isEditMode: opts.isEditMode || false,
             layerInfo: opts.layerInfo || null,
@@ -203,6 +215,24 @@ function ChatInterface({
         setMessages(prev => prev.filter(m => !m.isLoading));
     }, []);
 
+    const selectedModelObj = availableModels.find(m => m.id === currentModelId);
+    const modelSupportsVision = selectedModelObj?.supportsVision ?? false;
+
+    const handleImageAttach = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+        if (file.size > MAX_SIZE) {
+            addMessage('assistant', '⚠️ Image is too large. Please select an image under 5MB.');
+            e.target.value = '';
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => setAttachedImage(reader.result as string);
+        reader.readAsDataURL(file);
+        e.target.value = '';
+    }, [addMessage]);
+
     const sendChatMessage = useCallback(() => {
         const message = inputValue.trim();
         if ((!message) || isGenerating) return;
@@ -212,36 +242,58 @@ function ChatInterface({
                 addMessage('assistant', '⚠️ Please attach a frame to edit using the 📎 button or select an existing frame in the canvas.');
                 return;
             }
-            if (selectedFrames.length > 1) {
-                addMessage('assistant', '⚠️ Please attach only one frame.');
+            if (currentMode === 'edit' && selectedFrames.length > 1) {
+                addMessage('assistant', '⚠️ Please attach only one frame for editing.');
                 return;
             }
         }
 
-        addMessage('user', message);
+        // Clear previous exchange, keep only the welcome assistant message
+        setMessages(prev => prev.slice(0, 1));
         setInputValue('');
         setIsGenerating(true);
         requestStartTime.current = Date.now();
 
-        const newHistory = [...conversationHistory, { role: 'user', content: message }];
-        setConversationHistory(newHistory);
+        // const newHistory = [...conversationHistory, { role: 'user', content: message }];
+        // setConversationHistory(newHistory);
+
+        addMessage('user', message);
 
         if (isBasedOnExistingMode) {
+            if (attachedImage && !modelSupportsVision) {
+                addMessage('assistant', '⚠️ The selected model does not support images. Please switch to a vision-capable model (Gemini 2.5 Flash, Claude Opus, or GPT-5) using the model selector below.');
+                setIsGenerating(false);
+                return;
+            }
             const referenceFrame = selectedFrames[0];
-            addMessage('assistant', `Creating new design based on "${referenceFrame.name}" style...`, { isLoading: true });
+            const pinned = pinnedComponentNames && pinnedComponentNames.size > 0 ? Array.from(pinnedComponentNames) : [];
+            const pinnedNote = pinned.length > 0 ? ` (keeping ${pinned.join(', ')})` : '';
+            const refNames = selectedFrames.length > 1
+                ? `${selectedFrames.length} references`
+                : `"${referenceFrame.name}"`;
+            const loadingMsg = attachedImage
+                ? `Recreating image structure with ${refNames} design style${pinnedNote}...`
+                : `Creating new design based on ${refNames} style${pinnedNote}...`;
+            addMessage('assistant', loadingMsg, { isLoading: true });
             sendMessage('ai-generate-based-on-existing', {
                 message,
-                history: newHistory,
-                referenceId: referenceFrame.id,
-                ...(referenceFrame.designJson ? { referenceJson: referenceFrame.designJson as Record<string, unknown> } : {}),
-                model: currentModelId
+                history: [],
+                references: selectedFrames.map(f => ({
+                    id: f.id,
+                    name: f.name,
+                    ...(f.designJson ? { designJson: f.designJson as Record<string, unknown> } : {}),
+                })),
+                model: currentModelId,
+                pinnedComponentNames: pinned,
+                ...(attachedImage ? { imageDataUrl: attachedImage } : {}),
             });
+            setAttachedImage(null);
         } else if (currentMode === 'edit') {
             const attachedFrame = selectedFrames[0];
             addMessage('assistant', `Editing "${attachedFrame.name}"...`, { isLoading: true });
             sendMessage('ai-edit-design', {
                 message,
-                history: newHistory,
+                history: [],
                 layerId: attachedFrame.id,
                 ...(attachedFrame.designJson ? { layerJson: attachedFrame.designJson as Record<string, unknown> } : {}),
                 model: currentModelId,
@@ -262,23 +314,35 @@ function ChatInterface({
                 modelId: currentModelId
             });
         } else {
-            addMessage('assistant', 'Creating in progress ...', { isLoading: true });
+            if (attachedImage && !modelSupportsVision) {
+                addMessage('assistant', '⚠️ The selected model does not support images. Please switch to a vision-capable model (Gemini 2.5 Flash, Claude Opus, or GPT-5) using the model selector below.');
+                setIsGenerating(false);
+                return;
+            }
+            addMessage('assistant', attachedImage ? 'Analysing image and creating design...' : 'Creating in progress ...', { isLoading: true });
             sendMessage('ai-chat-message', {
                 message,
-                history: newHistory,
+                history: [],
                 model: currentModelId,
-                designSystemId: currentDesignSystemId
+                designSystemId: currentDesignSystemId,
+                ...(attachedImage ? { imageDataUrl: attachedImage } : {}),
             });
+            setAttachedImage(null);
         }
-    }, [inputValue, isGenerating, conversationHistory, currentMode, isBasedOnExistingMode, currentModelId, currentDesignSystemId, selectedLayerJson, sendMessage, addMessage, selectedFrames]);
+    }, [inputValue, isGenerating, currentMode, isBasedOnExistingMode, currentModelId, currentDesignSystemId, selectedLayerJson, sendMessage, addMessage, selectedFrames, attachedImage]);
 
     const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && e.shiftKey) return;
         if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
             e.preventDefault();
-            sendChatMessage();
+            if (isBasedOnExistingMode) {
+                const msg = inputValue.trim();
+                if (msg) onRequestGenerate?.(msg);
+            } else {
+                sendChatMessage();
+            }
         }
-    }, [sendChatMessage, isComposing]);
+    }, [sendChatMessage, isComposing, isBasedOnExistingMode, inputValue, onRequestGenerate]);
 
     const handleResponse = useCallback((msg: PluginMessage) => {
         const duration = requestStartTime.current != null ? (Date.now() - requestStartTime.current) / 1000 : undefined;
@@ -310,9 +374,8 @@ function ChatInterface({
         const rawCost = msg.cost as CostInfo | null;
         const cost: CostInfo | null = rawCost ? { ...rawCost, duration } : null;
 
-        addMessage('assistant', msg.message as string, {
+        addMessage('assistant', '', {
             designData: msg.designData,
-            previewHtml: msg.previewHtml as string | null,
             cost,
             isEditMode: isEdit,
             layerInfo: isEdit ? {
@@ -325,7 +388,7 @@ function ChatInterface({
             } : null,
         });
 
-        setConversationHistory(prev => [...prev, { role: 'assistant', content: msg.message as string }]);
+        // setConversationHistory(prev => [...prev, { role: 'assistant', content: msg.message as string }]);
 
         if (msg.designData) {
             const newMsgIndex = messagesRef.current.filter(m => !m.isLoading).length;
@@ -338,7 +401,7 @@ function ChatInterface({
         setIsGenerating(false);
         removeLoadingMessages();
         playNotificationSound();
-        addMessage('assistant', `${msg.error as string}`);
+        addMessage('assistant', `Error: ${msg.error as string}`);
 
         const errorText = `${msg.error || ''}`.toLowerCase();
         if (msg.statusCode === 402 || errorText.includes('insufficient') || errorText.includes('purchase credits')) {
@@ -390,6 +453,7 @@ function ChatInterface({
     ChatInterface.handleResponse = handleResponse;
     ChatInterface.handleError = handleError;
     ChatInterface.handlePrototypeResponse = handlePrototypeResponse;
+    ChatInterface.triggerGeneration = sendChatMessage;
 
     const handleSaveDesign = useCallback((designData: unknown) => {
         dispatch({ type: 'SET_EXPORT_DATA', data: designData });
@@ -423,7 +487,9 @@ function ChatInterface({
     }, []);
 
     const placeholder = isBasedOnExistingMode
-        ? `Create a design based on "${selectedFrames[0]?.name ?? 'reference'}"`
+        ? selectedFrames.length > 1
+            ? `Create a design based on ${selectedFrames.length} references...`
+            : `Create a design based on "${selectedFrames[0]?.name ?? 'reference'}"`
         : currentMode === 'edit'
             ? 'Change the background color to blue...'
             : currentMode === 'prototype'
@@ -476,10 +542,9 @@ function ChatInterface({
                                     />
                                 )}
                                 {/* {msg.cost && <CostBreakdown cost={msg.cost} />} */}
-                                {(msg.designData || msg.previewHtml) && (
+                                {!!msg.designData && (
                                     <DesignPreview
                                         designData={msg.designData}
-                                        previewHtml={msg.previewHtml}
                                         isEditMode={msg.isEditMode}
                                         isBasedOnExistingMode={isBasedOnExistingMode}
                                         layerInfo={msg.layerInfo}
@@ -527,16 +592,38 @@ function ChatInterface({
             <div className="chat-input-area">
                 {/* Frame Chips */}
                 {selectedFrames.length > 0 && (
-                    <div className="frame-chips">
-                        {selectedFrames.map(frame => (
-                            <span key={frame.id} className="f-chip">
-                                <span className="chip-icon"></span>
-                                {frame.name.length > 20 ? frame.name.slice(0, 20) + '…' : frame.name}
-                                <button className="chip-x" onClick={() => onRemoveFrame?.(frame.id)}>✕</button>
-                            </span>
-                        ))}
+                    <div className="frame-chips-wrap">
+                        <div className="frame-chips">
+                            {selectedFrames.map((frame, i) => (
+                                <span key={frame.id} className={`f-chip ${i === 0 ? 'f-chip--main' : 'f-chip--support'}`}>
+                                    <span className="chip-badge">{i === 0 ? 'Main' : 'Support'}</span>
+                                    <span className="chip-name">{frame.name}</span>
+                                    <button className="chip-x" onClick={() => onRemoveFrame?.(frame.id)}>✕</button>
+                                </span>
+                            ))}
+                        </div>
+                        <button className="frame-chips-clear" onClick={onClearFrames} type="button">
+                            Clear
+                        </button>
                     </div>
                 )}
+
+                {/* Image Preview */}
+                {attachedImage && (
+                    <div className="image-preview-row">
+                        <img src={attachedImage} className="image-preview-thumb" alt="reference" />
+                        <button className="chip-x" onClick={() => setAttachedImage(null)}>✕</button>
+                    </div>
+                )}
+
+                {/* Hidden image file input */}
+                <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    style={{ display: 'none' }}
+                    onChange={handleImageAttach}
+                />
 
                 {/* Input Row */}
                 {currentMode === 'prototype' ? (
@@ -564,9 +651,10 @@ function ChatInterface({
                 ) : (
                     <div className="input-row">
                         <button
-                            className={`attach-btn ${framePickerOpen ? 'active' : ''}`}
-                            onClick={onToggleFramePicker}
-                            title="Attach frames"
+                            className={`attach-btn ${attachedImage ? 'active' : ''}`}
+                            onClick={() => imageInputRef.current?.click()}
+                            title={modelSupportsVision ? 'Attach image (image → design)' : 'Attach image — switch to a vision model (Gemini, Claude, GPT) to send'}
+                            disabled={isGenerating}
                         >
                             📎
                         </button>
@@ -583,11 +671,11 @@ function ChatInterface({
                             onCompositionStart={() => setIsComposing(true)}
                             onCompositionEnd={() => setIsComposing(false)}
                             disabled={isGenerating}
-                            rows={1}
+                            rows={3}
                         />
                         <button
                             className="send-btn-icon"
-                            onClick={sendChatMessage}
+                            onClick={isBasedOnExistingMode ? () => onRequestGenerate?.(inputValue.trim()) : sendChatMessage}
                             disabled={isGenerating || !inputValue.trim()}
                         >
                             Generate
@@ -635,7 +723,7 @@ function ChatInterface({
                         )}
                     </button>
 
-                    {/* <button
+                    <button
                         className="selector-pill ds"
                         onClick={(e) => {
                             e.stopPropagation();
@@ -663,7 +751,7 @@ function ChatInterface({
                                 ))}
                             </div>
                         )}
-                    </button> */}
+                    </button>
 
                     <span className="selectors-spacer" />
                     <span className="chat-hint-inline">↵ Send</span>
@@ -677,6 +765,7 @@ namespace ChatInterface {
     export let handleResponse: ((msg: PluginMessage) => void) | undefined;
     export let handleError: ((msg: PluginMessage) => void) | undefined;
     export let handlePrototypeResponse: ((msg: PluginMessage) => void) | undefined;
+    export let triggerGeneration: (() => void) | undefined;
 }
 
 export default ChatInterface;

@@ -3,8 +3,8 @@ declare const process: { env: { [key: string]: string } };
  * Plugin configuration constants
  */
 export const PluginConfig = {
-  UI_WIDTH: 780,
-  UI_HEIGHT: 900,
+  UI_WIDTH: 400,
+  UI_HEIGHT: 700,
   THEME_COLORS: true,
 } as const;
 
@@ -49,3 +49,5 @@ export const defaultDesignSystem = {
   id: 'default-design-system',
   name: 'Default Design System',
 }
+
+export const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5MB — max JSON body size for backend requests

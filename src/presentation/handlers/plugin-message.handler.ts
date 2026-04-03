@@ -7,7 +7,8 @@ import {
   ExportSelectedUseCase,
   ExportAllUseCase,
 } from '../../application/use-cases';
-import { ApiConfig, defaultModel } from '../../shared/constants/plugin-config.js';
+import { ApiConfig, defaultModel, MAX_PAYLOAD_BYTES } from '../../shared/constants/plugin-config.js';
+import { NodeExporter } from '../../infrastructure/figma/exporters/node.exporter';
 import { GetUserInfoUseCase } from '@application/use-cases/getUserInfoUseCase';
 import { errorReporter } from '../../infrastructure/services/error-reporter.service';
 import { ImageOptimizerService, ImageReference } from '../../infrastructure/services/plugin-image-optimizer.service'; // ← NEW
@@ -64,7 +65,7 @@ export class PluginMessageHandler {
           break;
         case 'ai-chat-message':
           if (message.message !== undefined) {
-            await this.handleAIChatMessage(message.message, message.history, message.model, message.designSystemId);
+            await this.handleAIChatMessage(message.message, message.history, message.model, message.designSystemId, message.imageDataUrl as string | undefined);
           }
           break;
         case 'request-layer-selection-for-edit':
@@ -72,6 +73,42 @@ export class PluginMessageHandler {
           break;
         case 'request-layer-selection-for-reference':
           await this.handleRequestLayerSelectionForReference();
+          break;
+        case 'request-node-json-by-id':
+          if (message.nodeId) {
+            const nodeJson = await this.exportNodeById(message.nodeId as string);
+            if (nodeJson) {
+              this.uiPort.postMessage({
+                type: 'layer-selected-for-reference',
+                layerId: message.nodeId,
+                layerName: message.nodeName ?? '',
+                layerJson: nodeJson,
+              });
+            }
+          }
+          break;
+        case 'request-node-shallow-json':
+          if (message.nodeId) {
+            const shallowJson = await this.exportNodeShallow(message.nodeId as string);
+            if (shallowJson) {
+              this.uiPort.postMessage({
+                type: 'node-shallow-json',
+                nodeId: message.nodeId,
+                nodeName: message.nodeName ?? '',
+                shallowJson,
+              });
+            }
+          }
+          break;
+        case 'request-node-children-shallow':
+          if (message.nodeId) {
+            const children = await this.exportNodeChildrenShallow(message.nodeId as string);
+            this.uiPort.postMessage({
+              type: 'node-children-shallow',
+              parentNodeId: message.nodeId,
+              children: children || [],
+            });
+          }
           break;
         case 'ai-edit-design':
           if (message.message !== undefined) {
@@ -87,18 +124,15 @@ export class PluginMessageHandler {
           break;
         case 'ai-generate-based-on-existing':
           if (message.message !== undefined) {
-            let refJson = message.referenceJson;
-            // If only referenceId is provided, fetch and export the node
-            if (!refJson && message.referenceId) {
-              refJson = await this.exportNodeById(message.referenceId);
-            }
-            if (refJson) {
-              console.log('Handling generate-based-on-existing request');
+            const rawRefs = (message as any).references as Array<{ id: string; name: string; designJson?: any }> | undefined;
+            if (rawRefs && rawRefs.length > 0) {
               await this.handleGenerateBasedOnExisting(
                 message.message,
                 message.history,
-                refJson,
-                message.model
+                rawRefs,
+                message.model,
+                (message as any).pinnedComponentNames as string[] | undefined,
+                (message as any).imageDataUrl as string | undefined,
               );
             }
           }
@@ -371,6 +405,53 @@ export class PluginMessageHandler {
   }
 
   /**
+   * Shallow-export a node: root properties + direct children metadata only (no deep recursion)
+   */
+  private async exportNodeShallow(nodeId: string): Promise<any | null> {
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) {
+        console.warn(`Node not found for shallow export: ${nodeId}`);
+        return null;
+      }
+      const exporter = new NodeExporter();
+      return await exporter.exportShallow(node as SceneNode);
+    } catch (error) {
+      console.error(`Failed to shallow-export node ${nodeId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Export only the direct children of a node as shallow metadata
+   */
+  private async exportNodeChildrenShallow(nodeId: string): Promise<any[] | null> {
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node || !('children' in node)) return [];
+      const container = node as FrameNode | GroupNode | ComponentNode;
+      return container.children.map((child, i) => {
+        const childHasChildren = 'children' in child && (child as any).children?.length > 0;
+        const result: any = {
+          name: child.name,
+          type: child.type,
+          x: child.x,
+          y: child.y,
+          _nodeId: child.id,
+          _layerIndex: i,
+          hasChildren: childHasChildren,
+        };
+        if ('width' in child) result.width = (child as any).width;
+        if ('height' in child) result.height = (child as any).height;
+        return result;
+      });
+    } catch (error) {
+      console.error(`Failed to export children of node ${nodeId}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Get FrameInfo objects for an array of node IDs
    */
   private async getFrameInfoByIds(frameIds: string[]): Promise<FrameInfo[]> {
@@ -515,16 +596,22 @@ export class PluginMessageHandler {
       const requestKey = `edit_request_${Date.now()}`;
       this.imageReferencesStore.set(requestKey, imageReferences);
 
+      const editBody = JSON.stringify({
+        message: userMessage,
+        history: this.conversationHistory,
+        currentDesign: cleanedDesign,
+        modelId: selectedModel,
+        designSystemId: designSystemId
+      });
+
+      if (editBody.length > MAX_PAYLOAD_BYTES) {
+        throw new Error('Selected layer is too large to edit (exceeds 5MB). Please select a smaller layer.');
+      }
+
       const response = await fetch(`${ApiConfig.BASE_URL}/api/designs/edit-with-ai`, {
         method: 'POST',
         headers: await this.getUserInfoUseCase.execute(),
-        body: JSON.stringify({
-          message: userMessage,
-          history: this.conversationHistory,
-          currentDesign: cleanedDesign,
-          modelId: selectedModel,
-          designSystemId: designSystemId
-        })
+        body: editBody,
       });
 
       if (!response.ok) {
@@ -558,9 +645,7 @@ export class PluginMessageHandler {
 
       this.uiPort.postMessage({
         type: 'ai-edit-response',
-        message: result.message,
         designData: restoredDesign,
-        previewHtml: result.previewHtml,
         cost: result.cost ? {
           inputCost: result.cost.inputCost,
           outputCost: result.cost.outputCost,
@@ -598,35 +683,47 @@ export class PluginMessageHandler {
   private async handleGenerateBasedOnExisting(
     userMessage: string,
     history: Array<{ role: string; content: string }> | undefined,
-    referenceJson: any,
-    model?: string
+    references: Array<{ id: string; name: string; designJson?: any }>,
+    model?: string,
+    pinnedComponentNames?: string[],
+    imageDataUrl?: string,
   ): Promise<void> {
     try {
-      let conversationHistory: Array<{ role: string; content: string }> = [];
-
-      if (history && history.length > 0) {
-        conversationHistory = history;
-      }
-
+      const conversationHistory = history && history.length > 0 ? history : [];
       const selectedModel = model || defaultModel.id;
 
-      // Strip images from reference
-      console.log('Plugin: Stripping images from reference design...');
-      const { cleanedDesign, imageReferences } = this.imageOptimizer.stripImages(referenceJson);
-      console.log(`Plugin: Extracted ${imageReferences.length} images from reference`);
+      // Fetch JSON for any reference that doesn't have it, then strip images from all
+      const cleanedReferences: any[] = [];
+      for (const ref of references) {
+        let refJson = ref.designJson;
+        if (!refJson && ref.id) {
+          refJson = await this.exportNodeById(ref.id);
+        }
+        if (refJson) {
+          const { cleanedDesign } = this.imageOptimizer.stripImages(refJson);
+          cleanedReferences.push(cleanedDesign);
+        }
+      }
 
-      console.log("Generating design based on existing reference");
-      console.log("Endpoint: /api/designs/generate-based-on-existing");
+      console.log(`Plugin: sending ${cleanedReferences.length} references to backend`);
+
+      const basedOnExistingBody = JSON.stringify({
+        message: userMessage,
+        history: conversationHistory,
+        referenceDesigns: cleanedReferences,
+        modelId: selectedModel,
+        pinnedComponentNames: pinnedComponentNames ?? [],
+        ...(imageDataUrl ? { imageDataUrl } : {}),
+      });
+
+      if (basedOnExistingBody.length > MAX_PAYLOAD_BYTES) {
+        throw new Error('References are too large to send (exceeds 5MB). Please attach fewer layers or components.');
+      }
 
       const response = await fetch(`${ApiConfig.BASE_URL}/api/designs/generate-based-on-existing`, {
         method: 'POST',
         headers: await this.getUserInfoUseCase.execute(),
-        body: JSON.stringify({
-          message: userMessage,
-          history: conversationHistory,
-          referenceDesign: cleanedDesign,
-          modelId: selectedModel
-        })
+        body: basedOnExistingBody,
       });
 
       if (!response.ok) {
@@ -654,9 +751,7 @@ export class PluginMessageHandler {
 
       this.uiPort.postMessage({
         type: 'ai-based-on-existing-response',
-        message: result.message,
         designData: result.design,
-        previewHtml: result.previewHtml,
         cost: result.cost ? {
           inputCost: result.cost.inputCost,
           outputCost: result.cost.outputCost,
@@ -696,7 +791,8 @@ export class PluginMessageHandler {
     userMessage: string,
     history?: Array<{ role: string; content: string }>,
     model?: string,
-    designSystemId?: string
+    designSystemId?: string,
+    imageDataUrl?: string,
   ): Promise<void> {
     try {
       if (history && history.length > 0) {
@@ -712,7 +808,8 @@ export class PluginMessageHandler {
           message: userMessage,
           history: this.conversationHistory,
           modelId: selectedModel,
-          designSystemId: designSystemId
+          designSystemId: designSystemId,
+          ...(imageDataUrl ? { imageDataUrl } : {}),
         })
       });
 
@@ -743,9 +840,7 @@ export class PluginMessageHandler {
 
       this.uiPort.postMessage({
         type: 'ai-chat-response',
-        message: result.message,
         designData: result.design,
-        previewHtml: result.previewHtml,
         cost: result.cost ? {
           inputCost: result.cost.inputCost,
           outputCost: result.cost.outputCost,

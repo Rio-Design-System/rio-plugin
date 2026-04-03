@@ -1,5 +1,5 @@
-import { DesignNode } from '../../../domain/entities/design-node';
-import { Fill } from '../../../domain/entities/fill';
+import { DesignNode, NodeBoundVariables } from '../../../domain/entities/design-node';
+import { Fill, VariableRef } from '../../../domain/entities/fill';
 import { Effect } from '../../../domain/entities/effect';
 import { FillMapper } from '../../mappers/fill.mapper';
 import { EffectMapper } from '../../mappers/effect.mapper';
@@ -261,6 +261,10 @@ export abstract class BaseNodeCreator {
       this.applyEffects(node as SceneNode & MinimalBlendMixin, nodeData.effects);
     }
 
+    // NOTE: style IDs (fillStyleId etc.) must be applied via setFillStyleIdAsync and friends
+    // (they are read-only when manifest has "documentAccess": "dynamic-page").
+    // Callers must invoke applyStyleIdsAsync(node, nodeData) separately after awaiting this method.
+
     // Constraints
     if (nodeData.constraints && 'constraints' in node) {
       (node as any).constraints = {
@@ -289,6 +293,127 @@ export abstract class BaseNodeCreator {
           value: setting.constraint.value,
         } : { type: 'SCALE', value: 1 },
       }));
+    }
+  }
+
+  /**
+   * Apply global style IDs to a node using the async setters required by
+   * "documentAccess": "dynamic-page" manifests.  Direct property assignment
+   * is silently ignored in that mode — only the async methods actually work.
+   *
+   * Must be called AFTER raw fills/effects are set so the style reference
+   * takes precedence (linking a style overwrites the node's raw fills).
+   */
+  protected async applyStyleIdsAsync(node: SceneNode, nodeData: DesignNode): Promise<void> {
+    const ops: Promise<void>[] = [];
+
+    if (nodeData.fillStyleId && 'setFillStyleIdAsync' in node) {
+      ops.push(
+        (node as any).setFillStyleIdAsync(nodeData.fillStyleId)
+          .catch((e: unknown) => console.warn('setFillStyleIdAsync failed:', e))
+      );
+    }
+    if (nodeData.strokeStyleId && 'setStrokeStyleIdAsync' in node) {
+      ops.push(
+        (node as any).setStrokeStyleIdAsync(nodeData.strokeStyleId)
+          .catch((e: unknown) => console.warn('setStrokeStyleIdAsync failed:', e))
+      );
+    }
+    if (nodeData.effectStyleId && 'setEffectStyleIdAsync' in node) {
+      ops.push(
+        (node as any).setEffectStyleIdAsync(nodeData.effectStyleId)
+          .catch((e: unknown) => console.warn('setEffectStyleIdAsync failed:', e))
+      );
+    }
+    if (nodeData.gridStyleId && 'setGridStyleIdAsync' in node) {
+      ops.push(
+        (node as any).setGridStyleIdAsync(nodeData.gridStyleId)
+          .catch((e: unknown) => console.warn('setGridStyleIdAsync failed:', e))
+      );
+    }
+    if (nodeData.textStyleId && node.type === 'TEXT' && 'setTextStyleIdAsync' in node) {
+      ops.push(
+        (node as any).setTextStyleIdAsync(nodeData.textStyleId)
+          .catch((e: unknown) => console.warn('setTextStyleIdAsync failed:', e))
+      );
+    }
+
+    if (ops.length > 0) await Promise.all(ops);
+  }
+
+  /**
+   * Resolve a VariableRef to a live Figma Variable.
+   * First tries the node-scope ID, then falls back to searching all local
+   * variables by their cross-file key.
+   */
+  private async getVariableByIdOrKey(ref: VariableRef): Promise<Variable | null> {
+    try {
+      const v = await figma.variables.getVariableByIdAsync(ref.id);
+      if (v) return v;
+    } catch { /* id not found in this file */ }
+
+    for (const type of ['COLOR', 'FLOAT', 'BOOLEAN', 'STRING'] as VariableResolvedDataType[]) {
+      try {
+        const locals = await figma.variables.getLocalVariablesAsync(type);
+        const match = locals.find(v => v.key === ref.key);
+        if (match) return match;
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
+   * Apply Figma Variable bindings to a node.
+   * Must be called AFTER raw fills/strokes are set and AFTER applyStyleIdsAsync,
+   * so that setBoundVariableForPaint operates on the correct current paint array.
+   */
+  protected async applyBoundVariablesAsync(node: SceneNode, nodeData: DesignNode): Promise<void> {
+    // 1. Fill-level variables (color / opacity per paint)
+    for (const prop of ['fills', 'strokes'] as const) {
+      const fillData = prop === 'fills' ? nodeData.fills : nodeData.strokes;
+      if (!fillData?.length || !(prop in node)) continue;
+
+      const paints = [...((node as any)[prop] as Paint[])];
+      let changed = false;
+
+      for (let i = 0; i < fillData.length && i < paints.length; i++) {
+        const bv = fillData[i].boundVariables;
+        if (!bv) continue;
+        let paint = paints[i];
+
+        if (bv.color) {
+          const v = await this.getVariableByIdOrKey(bv.color);
+          if (v) { paint = figma.variables.setBoundVariableForPaint(paint as SolidPaint, 'color', v); changed = true; }
+        }
+        paints[i] = paint;
+      }
+
+      if (changed) (node as any)[prop] = paints;
+    }
+
+    // 2. Node-level scalar variables
+    const bv = nodeData.boundVariables;
+    if (!bv) return;
+
+    const FIELDS: (keyof NodeBoundVariables)[] = [
+      'opacity', 'width', 'height',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+      'itemSpacing', 'counterAxisSpacing',
+      'cornerRadius', 'topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius',
+      'fontSize', 'letterSpacing', 'lineHeight', 'strokeWeight',
+      'visible', 'characters',
+    ];
+
+    for (const field of FIELDS) {
+      const ref = (bv as any)[field] as VariableRef | undefined;
+      if (!ref) continue;
+      const v = await this.getVariableByIdOrKey(ref);
+      if (!v) continue;
+      try {
+        (node as any).setBoundVariable(field, v);
+      } catch (e) {
+        console.warn(`setBoundVariable(${field}) failed:`, e);
+      }
     }
   }
 

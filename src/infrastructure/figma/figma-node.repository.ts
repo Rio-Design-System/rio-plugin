@@ -1,4 +1,4 @@
-import { DesignNode, hasChildren, isTextNode } from '../../domain/entities/design-node';
+import { DesignNode, hasChildren } from '../../domain/entities/design-node';
 import { FrameInfo, InteractiveElement, PrototypeConnection, ApplyPrototypeResult } from '../../domain/entities/prototype-connection.entity';
 import { INodeRepository, SelectionInfo, ComponentRegistry as IComponentRegistry } from '../../domain/interfaces/node-repository.interface';
 import { NodeTypeMapper } from '../mappers/node-type.mapper';
@@ -41,6 +41,10 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
 
       // Apply common properties (opacity, effects, constraints, etc.)
       this.applyCommonProperties(node, nodeData);
+      // Apply style IDs via async setters (read-only with dynamic-page documentAccess)
+      await this.applyStyleIdsAsync(node, nodeData);
+      // Apply Figma Variable bindings (after fills are set, after style IDs)
+      await this.applyBoundVariablesAsync(node, nodeData);
 
       // Append to parent or page first so node.parent is set
       if (parentNode && 'appendChild' in parentNode) {
@@ -51,6 +55,17 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
 
       // Apply layout child properties after appending (needs parent context)
       this.applyLayoutChildProperties(node, nodeData);
+
+      // Reattach global styles by matching raw values against local document styles
+      // (handles AI-generated nodes that have raw colors/fonts matching a global style)
+      if (!parentNode) {
+        const [styleMaps, variableMaps] = await Promise.all([
+          this.buildStyleMaps(),
+          this.buildVariableMaps(),
+        ]);
+        await this.reattachStyles(node, styleMaps);
+        await this.reattachVariables(node, variableMaps);
+      }
 
       return node;
     } catch (error) {
@@ -64,6 +79,8 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
    */
   async exportSelected(): Promise<DesignNode[]> {
     const selection = figma.currentPage.selection;
+    const exported = await selection[0].exportAsync({ format: 'JSON_REST_V1' });
+    console.log("Figma JSON export:", JSON.stringify(exported, null, 2));
     const exportedNodes: DesignNode[] = [];
 
     // Clear image cache for fresh export
@@ -157,6 +174,46 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
    */
   clearComponentRegistry(): void {
     this.componentRegistry.clear();
+  }
+
+  /**
+   * Returns the SVG URL from nodeData.svgUrl or from an IMAGE fill with an SVG URL.
+   * Returns null if no SVG source is found.
+   */
+  private getSvgIconUrl(nodeData: DesignNode): string | null {
+    if (nodeData.svgUrl) return nodeData.svgUrl;
+    if (!nodeData.fills) return null;
+    for (const fill of nodeData.fills) {
+      if (fill.type === 'IMAGE' && fill.imageUrl) {
+        const url = fill.imageUrl;
+        if (url.endsWith('.svg') || url.includes('/svg/') || url.includes('api.iconify.design')) {
+          return url;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Fetch an SVG from a URL and create a Figma node using figma.createNodeFromSvg().
+   * Falls back to null on error (caller will use a rectangle placeholder instead).
+   */
+  private async createNodeFromSvgUrl(svgUrl: string, nodeData: DesignNode): Promise<FrameNode | null> {
+    try {
+      const response = await fetch(svgUrl);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const svgString = await response.text();
+      const svgNode = figma.createNodeFromSvg(svgString);
+      // Derive name from Iconify URL as "prefix:name" (e.g. "mdi:car"), fallback to nodeData.name
+      const iconifyMatch = svgUrl.match(/api\.iconify\.design\/([^/]+)\/([^/?#]+?)(?:\.svg)?(?:[?#]|$)/);
+      svgNode.name = iconifyMatch ? `${iconifyMatch[1]}:${iconifyMatch[2]}` : (nodeData.name || 'Icon');
+      const { width, height } = this.ensureMinDimensions(nodeData.width, nodeData.height, 24);
+      svgNode.resize(width, height);
+      return svgNode;
+    } catch (error) {
+      console.error('Error creating node from SVG URL:', svgUrl, error);
+      return null;
+    }
   }
 
   /**
@@ -412,6 +469,11 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
         if (hasChildren(nodeData)) {
           return this.rectangleCreator.createAsFrame(nodeData, createChildBound);
         }
+        // If rectangle has an SVG fill/url, create as SVG node
+        {
+          const svgUrl = this.getSvgIconUrl(nodeData);
+          if (svgUrl) return this.createNodeFromSvgUrl(svgUrl, nodeData);
+        }
         return this.rectangleCreator.create(nodeData);
 
       case 'TEXT':
@@ -433,6 +495,11 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
         // Check if we have vector path data
         if (nodeData.vectorPaths || nodeData.vectorNetwork) {
           return this.shapeCreator.createVector(nodeData);
+        }
+        // If vector has an SVG fill/url, create as SVG node
+        {
+          const svgUrl = this.getSvgIconUrl(nodeData);
+          if (svgUrl) return this.createNodeFromSvgUrl(svgUrl, nodeData);
         }
         return this.shapeCreator.createVectorPlaceholder(nodeData);
 
@@ -470,6 +537,10 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
 
       // Apply common properties (opacity, effects, constraints, etc.)
       this.applyCommonProperties(childNode, childData);
+      // Apply style IDs via async setters (read-only with dynamic-page documentAccess)
+      await this.applyStyleIdsAsync(childNode, childData);
+      // Apply variable bindings (must come after fills/strokes are set)
+      await this.applyBoundVariablesAsync(childNode, childData);
 
       // Append to parent first so node.parent is set
       parentNode.appendChild(childNode);
@@ -498,6 +569,8 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
           if (typeof childData.x === 'number') childNode.x = childData.x;
           if (typeof childData.y === 'number') childNode.y = childData.y;
           this.applyCommonProperties(childNode, childData);
+          await this.applyStyleIdsAsync(childNode, childData);
+          await this.applyBoundVariablesAsync(childNode, childData);
           this.appendToPage(childNode);
           this.applyLayoutChildProperties(childNode, childData);
           childNodes.push(childNode);
@@ -571,6 +644,8 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
         if (typeof childData.x === 'number') childNode.x = childData.x;
         if (typeof childData.y === 'number') childNode.y = childData.y;
         this.applyCommonProperties(childNode, childData);
+        await this.applyStyleIdsAsync(childNode, childData);
+        await this.applyBoundVariablesAsync(childNode, childData);
         targetParent.appendChild(childNode);
         this.applyLayoutChildProperties(childNode, childData);
         childNodes.push(childNode);
@@ -605,6 +680,219 @@ export class FigmaNodeRepository extends BaseNodeCreator implements INodeReposit
     }
 
     return group;
+  }
+
+  /**
+   * Build lookup maps from all local Figma styles for value-based matching.
+   * Uses async APIs to avoid deprecation warnings.
+   */
+  private async buildStyleMaps(): Promise<{
+    fillStyleMap: Map<string, string>;
+    textStyleMap: Map<string, string>;
+    effectStyleMap: Array<{ id: string; key: string; effects: readonly Effect[] }>;
+    gridStyleMap: Array<{ id: string; grids: ReadonlyArray<LayoutGrid> }>;
+  }> {
+    const fillStyleMap = new Map<string, string>();
+    const textStyleMap = new Map<string, string>();
+    const effectStyleMap: Array<{ id: string; key: string; effects: readonly Effect[] }> = [];
+    const gridStyleMap: Array<{ id: string; grids: ReadonlyArray<LayoutGrid> }> = [];
+
+    const [paintStyles, textStyles, effectStyles, gridStyles] = await Promise.all([
+      figma.getLocalPaintStylesAsync(),
+      figma.getLocalTextStylesAsync(),
+      figma.getLocalEffectStylesAsync(),
+      figma.getLocalGridStylesAsync(),
+    ]);
+
+    for (const style of paintStyles) {
+      for (const paint of style.paints) {
+        if (paint.type === 'SOLID') {
+          const key = `${Math.round(paint.color.r * 255)},${Math.round(paint.color.g * 255)},${Math.round(paint.color.b * 255)},${Math.round((paint.opacity ?? 1) * 100)}`;
+          if (!fillStyleMap.has(key)) fillStyleMap.set(key, style.id);
+        }
+      }
+    }
+
+    for (const style of textStyles) {
+      const key = `${style.fontName.family}:${style.fontName.style}:${style.fontSize}`;
+      if (!textStyleMap.has(key)) textStyleMap.set(key, style.id);
+    }
+
+    for (const style of effectStyles) {
+      effectStyleMap.push({ id: style.id, key: style.key, effects: style.effects });
+    }
+
+    for (const style of gridStyles) {
+      gridStyleMap.push({ id: style.id, grids: style.layoutGrids });
+    }
+
+    return { fillStyleMap, textStyleMap, effectStyleMap, gridStyleMap };
+  }
+
+
+  /**
+   * Walk a node tree and attach matching local style IDs via async setters.
+   * For AI-generated nodes (no fillStyleId) falls back to color-value matching.
+   * For round-trip nodes that already had applyStyleIdsAsync called, this is
+   * a no-op (fillStyleId will already be linked).
+   */
+  private async reattachStyles(
+    node: SceneNode,
+    styleMaps: Awaited<ReturnType<FigmaNodeRepository['buildStyleMaps']>>
+  ): Promise<void> {
+    const { fillStyleMap, textStyleMap, effectStyleMap, gridStyleMap } = styleMaps;
+
+    // Fill style — only for nodes with no style already linked
+    if ('fills' in node && !((node as any).fillStyleId) && 'setFillStyleIdAsync' in node) {
+      const fills = (node as GeometryMixin).fills;
+      if (Array.isArray(fills) && fills.length === 1 && fills[0].type === 'SOLID') {
+        const p = fills[0] as SolidPaint;
+        const key = `${Math.round(p.color.r * 255)},${Math.round(p.color.g * 255)},${Math.round(p.color.b * 255)},${Math.round((p.opacity ?? 1) * 100)}`;
+        const id = fillStyleMap.get(key);
+        if (id) await (node as any).setFillStyleIdAsync(id).catch(() => {});
+      }
+    }
+
+    // Stroke style
+    if ('strokes' in node && !((node as any).strokeStyleId) && 'setStrokeStyleIdAsync' in node) {
+      const strokes = (node as GeometryMixin).strokes;
+      if (Array.isArray(strokes) && strokes.length === 1 && strokes[0].type === 'SOLID') {
+        const p = strokes[0] as SolidPaint;
+        const key = `${Math.round(p.color.r * 255)},${Math.round(p.color.g * 255)},${Math.round(p.color.b * 255)},${Math.round((p.opacity ?? 1) * 100)}`;
+        const id = fillStyleMap.get(key);
+        if (id) await (node as any).setStrokeStyleIdAsync(id).catch(() => {});
+      }
+    }
+
+    // Effect style — match by comparing effects JSON against each local effect style
+    if ('effects' in node && !((node as any).effectStyleId) && 'setEffectStyleIdAsync' in node) {
+      const effects = (node as any).effects as readonly Effect[];
+      if (effects && effects.length > 0) {
+        for (const entry of effectStyleMap) {
+          if (this.effectsMatch(effects, entry.effects)) {
+            await (node as any).setEffectStyleIdAsync(entry.id).catch(() => {});
+            break;
+          }
+        }
+      }
+    }
+
+    // Grid style — match by comparing layoutGrids values
+    if ('layoutGrids' in node && !((node as any).gridStyleId) && 'setGridStyleIdAsync' in node) {
+      const grids = (node as any).layoutGrids as ReadonlyArray<LayoutGrid>;
+      if (grids && grids.length > 0) {
+        for (const entry of gridStyleMap) {
+          if (this.gridsMatch(grids, entry.grids)) {
+            await (node as any).setGridStyleIdAsync(entry.id).catch(() => {});
+            break;
+          }
+        }
+      }
+    }
+
+    // Text style — guard against figma.mixed symbol (mixed styles)
+    if (node.type === 'TEXT' && !((node as any).textStyleId) && 'setTextStyleIdAsync' in node) {
+      const t = node as TextNode;
+      const fontName = t.fontName;
+      if (fontName !== figma.mixed && fontName && typeof fontName === 'object') {
+        const fn = fontName as FontName;
+        const fontSize = t.fontSize;
+        if (fontSize !== figma.mixed) {
+          const key = `${fn.family}:${fn.style}:${fontSize}`;
+          const id = textStyleMap.get(key);
+          if (id) await (node as any).setTextStyleIdAsync(id).catch(() => {});
+        }
+      }
+    }
+
+    // Recurse into children
+    if ('children' in node) {
+      for (const child of (node as FrameNode).children) {
+        await this.reattachStyles(child, styleMaps);
+      }
+    }
+  }
+
+  /**
+   * Build a lookup map from the default-mode RGB value of every local COLOR
+   * variable to its variable ID. Used by reattachVariables for value-based matching.
+   */
+  private async buildVariableMaps(): Promise<{ colorVarMap: Map<string, string> }> {
+    const colorVarMap = new Map<string, string>();
+    try {
+      const colorVars = await figma.variables.getLocalVariablesAsync('COLOR');
+      for (const variable of colorVars) {
+        try {
+          const collection = await figma.variables.getVariableCollectionByIdAsync(
+            variable.variableCollectionId
+          );
+          if (!collection) continue;
+          const value = variable.valuesByMode[collection.defaultModeId];
+          if (value && typeof value === 'object' && 'r' in value) {
+            const rgb = value as { r: number; g: number; b: number };
+            const key = `${Math.round(rgb.r * 255)},${Math.round(rgb.g * 255)},${Math.round(rgb.b * 255)}`;
+            if (!colorVarMap.has(key)) colorVarMap.set(key, variable.id);
+          }
+        } catch { /* variable or collection not readable */ }
+      }
+    } catch { /* variables API not available */ }
+    return { colorVarMap };
+  }
+
+  /**
+   * Walk a node tree and bind SOLID fill colors to matching local COLOR variables.
+   * Skips paints that already have a color variable bound (round-trip case).
+   */
+  private async reattachVariables(
+    node: SceneNode,
+    variableMaps: { colorVarMap: Map<string, string> }
+  ): Promise<void> {
+    const { colorVarMap } = variableMaps;
+
+    if ('fills' in node) {
+      const fills = (node as GeometryMixin).fills;
+      if (Array.isArray(fills) && fills.length > 0) {
+        const updated = [...fills];
+        let changed = false;
+
+        for (let i = 0; i < fills.length; i++) {
+          const paint = fills[i];
+          if (paint.type !== 'SOLID') continue;
+          if ((paint as any).boundVariables?.color) continue; // already bound
+          const solid = paint as SolidPaint;
+          const key = `${Math.round(solid.color.r * 255)},${Math.round(solid.color.g * 255)},${Math.round(solid.color.b * 255)}`;
+          const varId = colorVarMap.get(key);
+          if (!varId) continue;
+          try {
+            const variable = await figma.variables.getVariableByIdAsync(varId);
+            if (variable) {
+              updated[i] = figma.variables.setBoundVariableForPaint(updated[i], 'color', variable);
+              changed = true;
+            }
+          } catch {}
+        }
+
+        if (changed) {
+          try { (node as GeometryMixin).fills = updated as Paint[]; } catch {}
+        }
+      }
+    }
+
+    if ('children' in node) {
+      for (const child of (node as FrameNode).children) {
+        await this.reattachVariables(child, variableMaps);
+      }
+    }
+  }
+
+  private gridsMatch(a: ReadonlyArray<LayoutGrid>, b: ReadonlyArray<LayoutGrid>): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((g, i) => JSON.stringify(g) === JSON.stringify(b[i]));
+  }
+
+  private effectsMatch(a: readonly Effect[], b: readonly Effect[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((e, i) => JSON.stringify(e) === JSON.stringify(b[i]));
   }
 
   async getHeaders(): Promise<Record<string, string>> {
