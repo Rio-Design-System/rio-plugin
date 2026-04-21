@@ -383,7 +383,7 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
             <ProjectsSection sendMessage={sendMessage} onSaveSelected={onSaveSelected} isSavingExport={isSavingExport} onAttachComponent={handleAttachComponent} attachedComponentIds={selectedFrameIds} />
 
             {/* Mode Bar */}
-            {/* <div className="mode-bar">
+            <div className="mode-bar">
                 {(Object.entries(MODE_LABELS) as Array<[Mode, ModeLabel]>).map(([mode, { icon, label, tip }]) => (
                     <button
                         key={mode}
@@ -395,7 +395,7 @@ function AiSection({ sendMessage, onSaveSelected, isSavingExport }: AiTabProps):
                         <span className="mode-tip">{tip}</span>
                     </button>
                 ))}
-            </div> */}
+            </div>
 
             {/* Chat View */}
             {view === 'chat' && (
